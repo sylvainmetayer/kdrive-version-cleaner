@@ -8,7 +8,7 @@ use futures::{StreamExt, stream};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{Client, Depth, ROOT_DIR_ID, RemoteFile};
-use crate::db::Db;
+use crate::db::{Db, FailedDir};
 use crate::events::AppEvent;
 
 /// Scanne toute l'arborescence d'un drive et remplace le cache.
@@ -192,26 +192,15 @@ async fn run(
     files.dedup_by_key(|f| f.id);
 
     let now = crate::now();
-    let failed_ids: Vec<i64> = failed.iter().map(|f| f.0).collect();
+    let failed: Vec<FailedDir> = failed
+        .into_iter()
+        .map(|(id, name, e)| FailedDir {
+            id,
+            label: format!("{name} ({e})"),
+        })
+        .collect();
     tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
-        let mut db = Db::open(&db_path)?;
-        let placeholder = (!failed.is_empty()).then_some("scan partiel");
-        let kept = db.replace_tree(drive_id, &files, &failed_ids, placeholder, now)?;
-        // Un dossier jamais scanné n'a aucun ancien contenu à conserver : il apparaît vide.
-        let report: Vec<String> = failed
-            .iter()
-            .map(|(id, name, e)| {
-                if kept.contains(id) {
-                    format!("{name} ({e} ; ancien contenu conservé)")
-                } else {
-                    format!("{name} ({e} ; aucun contenu en cache, affiché vide)")
-                }
-            })
-            .collect();
-        if !report.is_empty() {
-            db.set_scan_warning(drive_id, &report.join(", "))?;
-        }
-        Ok(report)
+        Db::open(&db_path)?.replace_tree(drive_id, &files, &failed, now)
     })
     .await?
 }

@@ -6,6 +6,13 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::api::{Drive, RemoteFile, Version};
 
+/// Dossier que le scan n'a pas pu lister : son contenu en cache est conservé.
+pub struct FailedDir {
+    pub id: i64,
+    /// Libellé affiché, par exemple `/Photos (HTTP 403 …)`.
+    pub label: String,
+}
+
 pub struct Db {
     conn: Connection,
 }
@@ -182,49 +189,72 @@ impl Db {
 
     // ---- scan ----
 
-    /// Remplace l'arborescence d'un drive par le résultat d'un scan.
+    /// Remplace l'arborescence d'un drive par le résultat d'un scan, en une seule
+    /// transaction (arbre, agrégats et avertissement).
     ///
-    /// Le contenu en cache des dossiers de `keep_dirs` (dossiers que le scan n'a pas
-    /// pu lister) est conservé, sous leur chemin actuel, et `warning` est mémorisé
-    /// avec le drive. Renvoie les dossiers dont un contenu a effectivement été conservé.
+    /// Le contenu en cache des dossiers de `failed` (que le scan n'a pas pu lister)
+    /// est conservé sous leur chemin actuel. Renvoie, pour chacun, le message
+    /// mémorisé dans `drives.scan_warning`.
     pub fn replace_tree(
         &mut self,
         drive_id: i64,
         files: &[RemoteFile],
-        keep_dirs: &[i64],
-        warning: Option<&str>,
+        failed: &[FailedDir],
         now: i64,
-    ) -> Result<Vec<i64>> {
+    ) -> Result<Vec<String>> {
         let paths = build_paths(files);
-        let mut kept_dirs = Vec::new();
         let tx = self.conn.transaction()?;
         tx.execute_batch(
             "DROP TABLE IF EXISTS temp.kept;
-             CREATE TEMP TABLE kept AS SELECT * FROM files WHERE 0;",
+             DROP TABLE IF EXISTS temp.fresh;
+             CREATE TEMP TABLE kept AS SELECT * FROM files WHERE 0;
+             CREATE TEMP TABLE fresh(id INTEGER PRIMARY KEY);",
         )?;
-        for dir in keep_dirs {
+        if !failed.is_empty() {
+            let mut stmt = tx.prepare("INSERT OR IGNORE INTO fresh(id) VALUES (?1)")?;
+            for f in files {
+                stmt.execute([f.id])?;
+            }
+        }
+        let mut report = Vec::new();
+        for dir in failed {
             let old: Option<String> = tx
                 .query_row(
                     "SELECT path FROM files WHERE drive_id = ?1 AND id = ?2",
-                    params![drive_id, dir],
+                    params![drive_id, dir.id],
                     |r| r.get(0),
                 )
                 .optional()?;
-            let Some(old) = old else { continue };
-            // Le dossier a pu être renommé depuis le scan précédent : son contenu
-            // conservé reprend le nouveau chemin, sinon recherche et nettoyage par
-            // préfixe viseraient les mauvais fichiers.
-            let new = paths.get(dir).cloned().unwrap_or_else(|| old.clone());
-            let n = tx.execute(
-                "INSERT INTO kept SELECT drive_id, id, parent_id, name,
-                    ?3 || substr(path, length(?2)), is_dir, size, nb_versions,
-                    versions_size, versioned_files, last_modified_at
-                 FROM files WHERE drive_id = ?1 AND substr(path, 1, length(?2)) = ?2",
-                params![drive_id, format!("{old}/"), new],
-            )?;
-            if n > 0 {
-                kept_dirs.push(*dir);
+            let mut n = 0;
+            if let Some(old) = old {
+                // On descend l'ancien arbre par parent_id, sans entrer dans ce que le
+                // scan vient de relire : un élément déplacé ailleurs depuis n'est pas
+                // ramené dans ce dossier. Le dossier a pu être renommé : le contenu
+                // conservé reprend son nouveau chemin, sinon recherche et nettoyage par
+                // préfixe viseraient les mauvais fichiers.
+                let new = paths.get(&dir.id).cloned().unwrap_or_else(|| old.clone());
+                n = tx.execute(
+                    "WITH RECURSIVE sub(id) AS (
+                        SELECT id FROM files
+                        WHERE drive_id = ?1 AND parent_id = ?2 AND id NOT IN (SELECT id FROM fresh)
+                        UNION
+                        SELECT f.id FROM files f JOIN sub ON f.drive_id = ?1 AND f.parent_id = sub.id
+                        WHERE f.id NOT IN (SELECT id FROM fresh))
+                     INSERT INTO kept SELECT drive_id, id, parent_id, name,
+                        CASE WHEN substr(path, 1, length(?3)) = ?3
+                             THEN ?4 || substr(path, length(?3)) ELSE path END,
+                        is_dir, size, nb_versions, versions_size, versioned_files, last_modified_at
+                     FROM files WHERE drive_id = ?1 AND id IN (SELECT id FROM sub)
+                        AND id NOT IN (SELECT id FROM kept)",
+                    params![drive_id, dir.id, format!("{old}/"), new],
+                )?;
             }
+            // Un dossier jamais scanné n'a aucun ancien contenu : il apparaît vide.
+            report.push(if n > 0 {
+                format!("{} ; ancien contenu conservé", dir.label)
+            } else {
+                format!("{} ; aucun contenu en cache, affiché vide", dir.label)
+            });
         }
         tx.execute("DELETE FROM files WHERE drive_id = ?1", [drive_id])?;
         tx.execute(
@@ -267,90 +297,25 @@ impl Db {
                 ])?;
             }
         }
-        tx.execute_batch("INSERT OR IGNORE INTO files SELECT * FROM kept; DROP TABLE temp.kept;")?;
+        tx.execute_batch(
+            "INSERT OR IGNORE INTO files SELECT * FROM kept;
+             DROP TABLE temp.kept;
+             DROP TABLE temp.fresh;",
+        )?;
+        let warning = (!report.is_empty()).then(|| report.join(", "));
         tx.execute(
             "UPDATE drives SET scanned_at = ?2, scan_warning = ?3 WHERE id = ?1",
             params![drive_id, now, warning],
         )?;
+        aggregates(&tx, drive_id)?;
         tx.commit()?;
-        self.recompute_aggregates(drive_id)?;
-        Ok(kept_dirs)
-    }
-
-    /// Remplace l'avertissement du dernier scan.
-    pub fn set_scan_warning(&self, drive_id: i64, warning: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE drives SET scan_warning = ?2 WHERE id = ?1",
-            params![drive_id, warning],
-        )?;
-        Ok(())
+        Ok(report)
     }
 
     /// Recalcule les totaux des dossiers à partir des fichiers.
     pub fn recompute_aggregates(&mut self, drive_id: i64) -> Result<()> {
-        struct Node {
-            parent: i64,
-            is_dir: bool,
-            size: i64,
-            vsize: i64,
-            versioned: i64,
-        }
-        let mut nodes: HashMap<i64, Node> = HashMap::new();
-        {
-            let mut stmt = self.conn.prepare(
-                "SELECT id, parent_id, is_dir, size, versions_size, nb_versions
-                 FROM files WHERE drive_id = ?1",
-            )?;
-            let rows = stmt.query_map([drive_id], |r| {
-                let is_dir: bool = r.get(2)?;
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    Node {
-                        parent: r.get(1)?,
-                        is_dir,
-                        size: if is_dir { 0 } else { r.get(3)? },
-                        vsize: if is_dir { 0 } else { r.get(4)? },
-                        versioned: if !is_dir && r.get::<_, i64>(5)? > 1 {
-                            1
-                        } else {
-                            0
-                        },
-                    },
-                ))
-            })?;
-            for row in rows {
-                let (id, n) = row?;
-                nodes.insert(id, n);
-            }
-        }
-        let mut totals: HashMap<i64, (i64, i64, i64)> = HashMap::new();
-        for n in nodes.values().filter(|n| !n.is_dir) {
-            let mut parent = n.parent;
-            // Garde-fou contre un cycle éventuel dans les données.
-            for _ in 0..nodes.len() {
-                let Some(p) = nodes.get(&parent) else { break };
-                let t = totals.entry(parent).or_default();
-                t.0 += n.size;
-                t.1 += n.vsize;
-                t.2 += n.versioned;
-                parent = p.parent;
-            }
-        }
         let tx = self.conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "UPDATE files SET size = ?3, versions_size = ?4, versioned_files = ?5
-                 WHERE drive_id = ?1 AND id = ?2",
-            )?;
-            for id in nodes.iter().filter(|(_, n)| n.is_dir).map(|(id, _)| id) {
-                let (s, v, c) = totals.get(id).copied().unwrap_or_default();
-                stmt.execute(params![drive_id, id, s, v, c])?;
-            }
-            tx.execute(
-                "UPDATE files SET versioned_files = (nb_versions > 1) WHERE drive_id = ?1 AND NOT is_dir",
-                [drive_id],
-            )?;
-        }
+        aggregates(&tx, drive_id)?;
         tx.commit()?;
         Ok(())
     }
@@ -667,6 +632,73 @@ impl Db {
 }
 
 /// Reconstruit les chemins complets à partir des liens parent/enfant.
+/// Recalcule les totaux des dossiers, dans la transaction de l'appelant.
+fn aggregates(conn: &Connection, drive_id: i64) -> Result<()> {
+    struct Node {
+        parent: i64,
+        is_dir: bool,
+        size: i64,
+        vsize: i64,
+        versioned: i64,
+    }
+    let mut nodes: HashMap<i64, Node> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, parent_id, is_dir, size, versions_size, nb_versions
+             FROM files WHERE drive_id = ?1",
+        )?;
+        let rows = stmt.query_map([drive_id], |r| {
+            let is_dir: bool = r.get(2)?;
+            Ok((
+                r.get::<_, i64>(0)?,
+                Node {
+                    parent: r.get(1)?,
+                    is_dir,
+                    size: if is_dir { 0 } else { r.get(3)? },
+                    vsize: if is_dir { 0 } else { r.get(4)? },
+                    versioned: if !is_dir && r.get::<_, i64>(5)? > 1 {
+                        1
+                    } else {
+                        0
+                    },
+                },
+            ))
+        })?;
+        for row in rows {
+            let (id, n) = row?;
+            nodes.insert(id, n);
+        }
+    }
+    let mut totals: HashMap<i64, (i64, i64, i64)> = HashMap::new();
+    for n in nodes.values().filter(|n| !n.is_dir) {
+        let mut parent = n.parent;
+        // Garde-fou contre un cycle éventuel dans les données.
+        for _ in 0..nodes.len() {
+            let Some(p) = nodes.get(&parent) else { break };
+            let t = totals.entry(parent).or_default();
+            t.0 += n.size;
+            t.1 += n.vsize;
+            t.2 += n.versioned;
+            parent = p.parent;
+        }
+    }
+    {
+        let mut stmt = conn.prepare(
+            "UPDATE files SET size = ?3, versions_size = ?4, versioned_files = ?5
+             WHERE drive_id = ?1 AND id = ?2",
+        )?;
+        for id in nodes.iter().filter(|(_, n)| n.is_dir).map(|(id, _)| id) {
+            let (s, v, c) = totals.get(id).copied().unwrap_or_default();
+            stmt.execute(params![drive_id, id, s, v, c])?;
+        }
+        conn.execute(
+            "UPDATE files SET versioned_files = (nb_versions > 1) WHERE drive_id = ?1 AND NOT is_dir",
+            [drive_id],
+        )?;
+    }
+    Ok(())
+}
+
 fn build_paths(files: &[RemoteFile]) -> HashMap<i64, String> {
     let by_id: HashMap<i64, &RemoteFile> = files.iter().map(|f| (f.id, f)).collect();
     let mut paths: HashMap<i64, String> = HashMap::new();
@@ -717,6 +749,13 @@ mod tests {
         }
     }
 
+    fn failed(id: i64, label: &str) -> FailedDir {
+        FailedDir {
+            id,
+            label: label.into(),
+        }
+    }
+
     fn sample() -> Db {
         let mut db = Db::open_in_memory().unwrap();
         db.upsert_drives(&[Drive {
@@ -733,7 +772,7 @@ mod tests {
             file(21, 11, "b.xlsx", false, 50, Some((2, 120))),
             file(22, 1, "c.txt", false, 10, Some((1, 10))),
         ];
-        db.replace_tree(7, &files, &[], None, 1).unwrap();
+        db.replace_tree(7, &files, &[], 1).unwrap();
         db
     }
 
@@ -823,16 +862,19 @@ mod tests {
             file(10, 1, "Docs", true, 0, None),
             file(22, 1, "c.txt", false, 10, Some((1, 10))),
         ];
-        db.replace_tree(7, &files, &[10], Some("/Docs (403)"), 2)
+        db.replace_tree(7, &files, &[failed(10, "/Docs (403)")], 2)
             .unwrap();
         // Contenu de /Docs conservé, agrégats recalculés, avertissement mémorisé.
         assert!(db.entry(7, 21).unwrap().is_some());
         assert_eq!(db.entry(7, 10).unwrap().unwrap().versions_size, 370);
         assert!(db.cached_versions(7, 21, 0).unwrap().is_some());
         let d = db.drive(7).unwrap().unwrap();
-        assert_eq!(d.scan_warning.as_deref(), Some("/Docs (403)"));
+        assert_eq!(
+            d.scan_warning.as_deref(),
+            Some("/Docs (403) ; ancien contenu conservé")
+        );
         // Un scan complet efface l'avertissement et le contenu disparu.
-        db.replace_tree(7, &files, &[], None, 3).unwrap();
+        db.replace_tree(7, &files, &[], 3).unwrap();
         assert!(db.entry(7, 21).unwrap().is_none());
         assert!(db.drive(7).unwrap().unwrap().scan_warning.is_none());
     }
@@ -845,11 +887,17 @@ mod tests {
             file(10, 1, "Archive", true, 0, None),
             file(12, 1, "Docs", true, 0, None),
         ];
-        let kept = db
-            .replace_tree(7, &files, &[10, 12], Some("/Archive (403)"), 2)
+        let report = db
+            .replace_tree(7, &files, &[failed(10, "/Archive"), failed(12, "/Docs")], 2)
             .unwrap();
         // /Docs (12) n'avait rien en cache : il n'est pas annoncé comme conservé.
-        assert_eq!(kept, vec![10]);
+        assert_eq!(
+            report,
+            vec![
+                "/Archive ; ancien contenu conservé",
+                "/Docs ; aucun contenu en cache, affiché vide"
+            ]
+        );
         assert_eq!(db.entry(7, 20).unwrap().unwrap().path, "/Archive/a.docx");
         assert_eq!(
             db.entry(7, 21).unwrap().unwrap().path,
@@ -868,6 +916,61 @@ mod tests {
         let mut a = ids(archive);
         a.sort();
         assert_eq!(a, vec![20, 21]);
+    }
+
+    #[test]
+    fn partial_scan_does_not_pull_back_moved_content() {
+        // Ancien arbre : /Docs/Sub_dir/b.xlsx. Sub_dir (11) a été déplacé à la racine.
+        let moved = || {
+            vec![
+                file(10, 1, "Docs", true, 0, None),
+                file(11, 1, "Sub_dir", true, 0, None),
+            ]
+        };
+
+        // A : /Docs et /Sub_dir échouent tous les deux.
+        let mut db = sample();
+        db.replace_tree(
+            7,
+            &moved(),
+            &[failed(10, "/Docs"), failed(11, "/Sub_dir")],
+            2,
+        )
+        .unwrap();
+        let b = db.entry(7, 21).unwrap().unwrap();
+        assert_eq!((b.parent_id, b.path.as_str()), (11, "/Sub_dir/b.xlsx"));
+        let ids = |db: &Db, id| {
+            let dir = db.entry(7, id).unwrap().unwrap();
+            db.versioned_descendants(7, &dir)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&db, 10), vec![20]);
+        assert_eq!(ids(&db, 11), vec![21]);
+
+        // B : seul /Docs échoue ; /Sub_dir, rescanné, est vide (b.xlsx supprimé).
+        let mut db = sample();
+        let report = db
+            .replace_tree(7, &moved(), &[failed(10, "/Docs")], 2)
+            .unwrap();
+        assert!(db.entry(7, 21).unwrap().is_none(), "pas de fantôme");
+        assert!(db.children(7, 11).unwrap().is_empty());
+        assert_eq!(db.entry(7, 11).unwrap().unwrap().versions_size, 0);
+        assert_eq!(report, vec!["/Docs ; ancien contenu conservé"]);
+
+        // Tout le contenu est parti ailleurs : rien n'est annoncé comme conservé.
+        let mut db = sample();
+        let files = vec![
+            file(10, 1, "Docs", true, 0, None),
+            file(11, 1, "Sub_dir", true, 0, None),
+            file(20, 1, "a.docx", false, 100, Some((3, 400))),
+        ];
+        let report = db
+            .replace_tree(7, &files, &[failed(10, "/Docs")], 2)
+            .unwrap();
+        assert_eq!(report, vec!["/Docs ; aucun contenu en cache, affiché vide"]);
     }
 
     #[test]

@@ -73,7 +73,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 
 ## Cache SQLite
 
-- `replace_tree` remplace l'arborescence d'un drive après un scan. Le contenu des dossiers dont le scan a échoué est conservé, **sous le chemin actuel du dossier** (il a pu être renommé), et l'avertissement est stocké dans `drives.scan_warning`. La fonction renvoie les dossiers dont un contenu a réellement été conservé.
+- `replace_tree` remplace l'arborescence d'un drive après un scan, en **une seule transaction** (arbre, agrégats, avertissement). Le contenu des dossiers dont le scan a échoué (`FailedDir`) est conservé : on descend l'ancien arbre par `parent_id` sans entrer dans ce que le scan vient de relire (un élément déplacé ne revient pas), et on lui donne le **chemin actuel du dossier** (il a pu être renommé). L'avertissement, stocké dans `drives.scan_warning`, précise pour chaque dossier si un contenu a réellement été conservé.
 - Les agrégats des dossiers (`size`, `versions_size`, `versioned_files`) sont recalculés par `recompute_aggregates`. `sync_version_count` les propage aussi aux dossiers parents.
 - Les versions en cache expirent au bout d'1 h (`VERSIONS_TTL_SECS`).
 - Les filtres de chemin utilisent une comparaison de préfixe exacte (`substr(path, 1, length(?)) = ?`), et **jamais `LIKE`**, qui ignore la casse.

@@ -58,8 +58,7 @@ pub fn seed(db_path: &Path) -> Db {
         file(21, 10, "a.txt", 10, Some((1, 10))),
         file(30, 1, "notes.md", 100, Some((2, 200))),
     ];
-    db.replace_tree(DRIVE, &files, &[], None, kdvc::now())
-        .unwrap();
+    db.replace_tree(DRIVE, &files, &[], kdvc::now()).unwrap();
     db
 }
 
