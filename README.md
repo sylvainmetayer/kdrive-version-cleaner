@@ -1,32 +1,32 @@
 # kdvc — kDrive Version Cleaner
 
-[![CI](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/actions/workflows/ci.yml)
-[![Qualité](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/actions/workflows/quality.yml/badge.svg)](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/actions/workflows/quality.yml)
-[![CodeQL](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/actions/workflows/codeql.yml/badge.svg)](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/actions/workflows/codeql.yml)
-[![Release](https://img.shields.io/github/v/release/sylvainmetayer-github/kdrive-version-cleaner?logo=github&sort=semver)](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/releases/latest)
-[![Téléchargements](https://img.shields.io/github/downloads/sylvainmetayer-github/kdrive-version-cleaner/total?logo=github)](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/releases)
+[![CI](https://github.com/sylvainmetayer/kdrive-version-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/sylvainmetayer/kdrive-version-cleaner/actions/workflows/ci.yml)
+[![Qualité](https://github.com/sylvainmetayer/kdrive-version-cleaner/actions/workflows/quality.yml/badge.svg)](https://github.com/sylvainmetayer/kdrive-version-cleaner/actions/workflows/quality.yml)
+[![CodeQL](https://github.com/sylvainmetayer/kdrive-version-cleaner/actions/workflows/codeql.yml/badge.svg)](https://github.com/sylvainmetayer/kdrive-version-cleaner/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/sylvainmetayer/kdrive-version-cleaner?logo=github&sort=semver)](https://github.com/sylvainmetayer/kdrive-version-cleaner/releases/latest)
+[![Téléchargements](https://img.shields.io/github/downloads/sylvainmetayer/kdrive-version-cleaner/total?logo=github)](https://github.com/sylvainmetayer/kdrive-version-cleaner/releases)
 
-[![codecov](https://codecov.io/gh/sylvainmetayer-github/kdrive-version-cleaner/graph/badge.svg)](https://codecov.io/gh/sylvainmetayer-github/kdrive-version-cleaner)
-[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer-github_kdrive-version-cleaner&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer-github_kdrive-version-cleaner)
-[![Maintainability](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer-github_kdrive-version-cleaner&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer-github_kdrive-version-cleaner)
-[![Security](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer-github_kdrive-version-cleaner&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer-github_kdrive-version-cleaner)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sylvainmetayer-github/kdrive-version-cleaner/badge)](https://scorecard.dev/viewer/?uri=github.com/sylvainmetayer-github/kdrive-version-cleaner)
+[![codecov](https://codecov.io/gh/sylvainmetayer/kdrive-version-cleaner/graph/badge.svg)](https://codecov.io/gh/sylvainmetayer/kdrive-version-cleaner)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_kdrive-version-cleaner&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_kdrive-version-cleaner)
+[![Maintainability](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_kdrive-version-cleaner&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_kdrive-version-cleaner)
+[![Security](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_kdrive-version-cleaner&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_kdrive-version-cleaner)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sylvainmetayer/kdrive-version-cleaner/badge)](https://scorecard.dev/viewer/?uri=github.com/sylvainmetayer/kdrive-version-cleaner)
 
-[![Licence MIT](https://img.shields.io/github/license/sylvainmetayer-github/kdrive-version-cleaner)](LICENSE)
+[![Licence MIT](https://img.shields.io/github/license/sylvainmetayer/kdrive-version-cleaner)](LICENSE)
 [![MSRV](https://img.shields.io/badge/rustc-1.88+-orange?logo=rust)](https://blog.rust-lang.org/)
 [![Built With Ratatui](https://img.shields.io/badge/Built_With_Ratatui-000?logo=ratatui&logoColor=fff)](https://ratatui.rs/)
-[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/network/updates)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/sylvainmetayer/kdrive-version-cleaner/network/updates)
 
 Une petite application en terminal (TUI, en Rust avec ratatui) pour voir quelle place prennent les anciennes versions des fichiers d'un kDrive Infomaniak, puis les supprimer sans risque.
 
 ## Installation
 
-Binaires prêts à l'emploi (Linux x86_64/ARM64/musl, macOS Intel/Apple Silicon, Windows) sur la [page des releases](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/releases/latest), avec leur somme SHA-256 et une attestation de provenance (`gh attestation verify <archive> -R sylvainmetayer-github/kdrive-version-cleaner`).
+Binaires prêts à l'emploi (Linux x86_64/ARM64/musl, macOS Intel/Apple Silicon, Windows) sur la [page des releases](https://github.com/sylvainmetayer/kdrive-version-cleaner/releases/latest), avec leur somme SHA-256 et une attestation de provenance (`gh attestation verify <archive> -R sylvainmetayer/kdrive-version-cleaner`).
 
 Depuis les sources (Rust ≥ 1.88) :
 
 ```sh
-cargo install --git https://github.com/sylvainmetayer-github/kdrive-version-cleaner
+cargo install --git https://github.com/sylvainmetayer/kdrive-version-cleaner
 ```
 
 ## Token API
