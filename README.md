@@ -34,12 +34,12 @@ Pour figer une version ou forcer le binaire Linux statique (musl, sans dépendan
 
 ```toml
 [tools]
-"github:sylvainmetayer/kdrive-version-cleaner" = { version = "0.1.0", asset_pattern = "*linux-musl*" }
+"github:sylvainmetayer/kdrive-version-cleaner" = { version = "0.1.1", asset_pattern = "*linux-musl*" }
 ```
 
 `mise upgrade` installe ensuite les nouvelles releases, et `mise uninstall github:sylvainmetayer/kdrive-version-cleaner` désinstalle l'outil.
 
-> Si `minimum_release_age` est configuré dans mise, une release trop récente est masquée (« no versions found … matching minimum_release_age »). Dans ce cas, indique la version explicitement (`mise use -g github:sylvainmetayer/kdrive-version-cleaner@0.1.0`), ou attends que le délai soit écoulé.
+> Si `minimum_release_age` est configuré dans mise, une release trop récente est masquée (« no versions found … matching minimum_release_age »). Dans ce cas, indique la version explicitement (`mise use -g github:sylvainmetayer/kdrive-version-cleaner@0.1.1`), ou attends que le délai soit écoulé.
 
 ### Binaires
 
