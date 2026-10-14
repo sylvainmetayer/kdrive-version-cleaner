@@ -143,3 +143,23 @@ async fn versions_cursor_pagination() {
         vec![1, 2]
     );
 }
+
+#[tokio::test]
+async fn delete_is_not_replayed_after_server_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/2/drive/7/files/2/versions/9"))
+        .respond_with(ResponseTemplate::new(502).set_body_json(json!({
+            "result": "error", "error": {"code": "bad_gateway"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server)
+        .await
+        .delete_version(7, 2, 9)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("502"), "{err}");
+}

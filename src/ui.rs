@@ -119,7 +119,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, t)| format!("{} {}", i + 1, t.title()));
-    let selected = Tab::ALL.iter().position(|t| *t == app.tab).unwrap_or(0);
+    let selected = app.tab.index();
     f.render_widget(
         Tabs::new(titles)
             .select(selected)

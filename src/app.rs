@@ -42,7 +42,7 @@ impl Tab {
         }
     }
 
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
 }
@@ -377,12 +377,14 @@ impl App {
                 self.scan = None;
                 match res {
                     Ok(()) => {
-                        self.refresh()?;
-                        self.status = format!(
-                            "Scan terminé : {} fichiers, {} versionnés.",
-                            crate::ui::fmt_count(self.stats.files),
-                            crate::ui::fmt_count(self.stats.versioned_files)
-                        );
+                        self.status = match self.refresh() {
+                            Ok(()) => format!(
+                                "Scan terminé : {} fichiers, {} versionnés.",
+                                crate::ui::fmt_count(self.stats.files),
+                                crate::ui::fmt_count(self.stats.versioned_files)
+                            ),
+                            Err(e) => format!("Scan terminé, lecture du cache impossible : {e:#}"),
+                        };
                     }
                     Err(e) => self.status = format!("Échec du scan : {e}"),
                 }
@@ -444,8 +446,11 @@ impl App {
             }
             AppEvent::ExecDone(summary) => {
                 self.cancel = None;
-                self.refresh()?;
+                // Le bilan doit s'afficher même si la relecture du cache échoue.
                 self.overlay = Overlay::Summary(summary);
+                if let Err(e) = self.refresh() {
+                    self.status = format!("Lecture du cache impossible : {e:#}");
+                }
             }
         }
         Ok(())

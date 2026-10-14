@@ -83,6 +83,10 @@ impl Client {
         query: &[(&str, String)],
     ) -> Result<Envelope<T>> {
         let url = format!("{}{}", self.base, path);
+        // Un DELETE peut avoir été traité malgré un timeout ou une 5xx : le rejouer
+        // échouerait (version déjà supprimée) et fausserait journal et bilan.
+        // On ne rejoue alors que les cas où la requête n'a sûrement pas été traitée.
+        let idempotent = method == Method::GET;
         let mut attempt = 0;
         loop {
             attempt += 1;
@@ -97,7 +101,10 @@ impl Client {
 
             let resp = match resp {
                 Ok(r) => r,
-                Err(e) if attempt < MAX_ATTEMPTS && (e.is_timeout() || e.is_connect()) => {
+                Err(e)
+                    if attempt < MAX_ATTEMPTS
+                        && (e.is_connect() || (idempotent && e.is_timeout())) =>
+                {
                     sleep(backoff(attempt)).await;
                     continue;
                 }
@@ -105,7 +112,7 @@ impl Client {
             };
 
             let status = resp.status();
-            if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+            if (status == StatusCode::TOO_MANY_REQUESTS || (idempotent && status.is_server_error()))
                 && attempt < MAX_ATTEMPTS
             {
                 let wait = resp
