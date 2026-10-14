@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use chrono::{Local, TimeZone};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -7,7 +9,9 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, Paragraph, Row, Table, TableState, Tabs, Wrap,
 };
 
-use crate::app::{App, Overlay, RULE_CHOICES, SearchForm, Tab};
+use crate::api::Drive;
+use crate::app::{App, Overlay, RULE_CHOICES, RulePicker, SearchForm, Tab, VersionsView};
+use crate::cleaner::{ExecSummary, Plan};
 use crate::db::Entry;
 
 const ACCENT: Color = Color::Cyan;
@@ -540,402 +544,416 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
     let full_h = f.area().height.saturating_sub(4);
     match &mut app.overlay {
         Overlay::None => {}
-        Overlay::Help => {
-            let inner = popup(f, 70, 24, "Aide", ACCENT);
-            let lines: Vec<Line> = [
-                ("1-5, Tab", "changer d'onglet"),
-                ("↑↓ j k, PgUp PgDn, g G", "naviguer"),
-                (
-                    "Entrée / →",
-                    "ouvrir un dossier, voir les versions d'un fichier",
-                ),
-                ("← / Retour arrière", "dossier parent"),
-                ("c", "nettoyer l'élément sélectionné (fichier ou dossier)"),
-                ("C", "nettoyer tout le dossier / top / résultats"),
-                (
-                    "Espace (versions)",
-                    "cocher une version pour une suppression manuelle",
-                ),
-                (
-                    "c (versions)",
-                    "supprimer les versions cochées, sinon choisir une règle",
-                ),
-                ("/", "modifier la recherche"),
-                ("e (journal)", "exporter le journal en CSV"),
-                ("r", "rescanner le drive"),
-                ("d", "changer de drive"),
-                ("Échap", "fermer / annuler une opération"),
-                ("q, Ctrl+C", "quitter"),
-                ("", ""),
-                ("Sécurité", "la version courante et les versions"),
-                (
-                    "",
-                    "« conservées pour toujours » ne sont jamais supprimées.",
-                ),
-                ("", "Toute suppression passe par un aperçu puis « oui »."),
-            ]
-            .iter()
-            .map(|(k, v)| {
-                Line::from(vec![
-                    Span::styled(format!("{k:<24}"), Style::new().fg(ACCENT)),
-                    Span::raw(*v),
-                ])
-            })
-            .collect();
-            f.render_widget(Paragraph::new(lines), inner);
-        }
-        Overlay::DrivePicker(state) => {
-            let inner = popup(
-                f,
-                60,
-                (app.drives.len() as u16 + 4).min(20),
-                "Choisir un drive",
-                ACCENT,
-            );
-            let rows = app.drives.iter().map(|d| {
-                Row::new(vec![
-                    Cell::from(d.name.clone()),
-                    Cell::from(d.used_size.map(fmt_size).unwrap_or_default()),
-                    Cell::from(format!("#{}", d.id)).dim(),
-                ])
-            });
-            let table = Table::new(
-                rows,
-                [
-                    Constraint::Min(20),
-                    Constraint::Length(10),
-                    Constraint::Length(10),
-                ],
-            )
-            .row_highlight_style(highlight())
-            .highlight_symbol("▶ ");
-            f.render_stateful_widget(table, inner, state);
-        }
-        Overlay::Versions(view) => {
-            let title = format!("Versions — {}", view.entry.path);
-            let inner = popup(f, full_w.min(100), full_h.min(30), &title, ACCENT);
-            let [info, table_area, help] = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Min(3),
-                Constraint::Length(1),
-            ])
-            .areas(inner);
-            f.render_widget(
-                Paragraph::new(format!(
-                    "Taille courante : {} · {} versions · anciennes versions : {}",
-                    fmt_size(view.entry.size),
-                    view.entry.nb_versions,
-                    fmt_size(view.entry.versions_size)
-                )),
-                info,
-            );
-            match (&view.versions, &view.error) {
-                (_, Some(e)) => f.render_widget(
-                    Paragraph::new(format!("Erreur : {e}"))
-                        .fg(DANGER)
-                        .wrap(Wrap { trim: true }),
-                    table_area,
-                ),
-                (None, None) => {
-                    f.render_widget(Paragraph::new("Chargement des versions…").dim(), table_area)
-                }
-                (Some(versions), None) => {
-                    let rows = versions.iter().map(|v| {
-                        let is_current = Some(v.id) == view.current_id;
-                        let mark = if view.marked.contains(&v.id) {
-                            "[x]"
-                        } else if is_current || v.keep_forever {
-                            "   "
-                        } else {
-                            "[ ]"
-                        };
-                        let note = if is_current {
-                            "protégée (plus récente)"
-                        } else if v.keep_forever {
-                            "conservée pour toujours"
-                        } else {
-                            ""
-                        };
-                        let style = if view.marked.contains(&v.id) {
-                            Style::new().fg(DANGER)
-                        } else if is_current {
-                            Style::new().fg(Color::Green)
-                        } else {
-                            Style::new()
-                        };
-                        Row::new(vec![
-                            Cell::from(mark),
-                            Cell::from(fmt_date(v.created_at)),
-                            Cell::from(fmt_size(v.size)),
-                            Cell::from(note),
-                            Cell::from(format!("#{}", v.id)).dim(),
-                        ])
-                        .style(style)
-                    });
-                    let table = Table::new(
-                        rows,
-                        [
-                            Constraint::Length(3),
-                            Constraint::Length(16),
-                            Constraint::Length(10),
-                            Constraint::Length(24),
-                            Constraint::Min(8),
-                        ],
-                    )
-                    .header(
-                        Row::new(["", "Date", "Taille", "", "Id"])
-                            .style(Style::new().bold().underlined()),
-                    )
-                    .row_highlight_style(highlight())
-                    .highlight_symbol("▶ ");
-                    f.render_stateful_widget(table, table_area, &mut view.state);
-                }
-            }
-            let marked: i64 = view
-                .versions
-                .iter()
-                .flatten()
-                .filter(|v| view.marked.contains(&v.id))
-                .map(|v| v.size)
-                .sum();
-            let text = if view.marked.is_empty() {
-                "Espace cocher · c appliquer une règle · Échap fermer".to_string()
-            } else {
-                format!(
-                    "{} cochée(s), {} · c supprimer la sélection · Échap fermer",
-                    view.marked.len(),
-                    fmt_size(marked)
-                )
-            };
-            f.render_widget(Paragraph::new(text).dim(), help);
-        }
-        Overlay::RulePicker(p) => {
-            let inner = popup(f, 72, 13, "Règle de nettoyage", ACCENT);
-            let total: i64 = p.targets.iter().map(|e| e.versions_size).sum();
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::raw("Cible : ").dim(),
-                    Span::raw(p.label.clone()).bold(),
-                ]),
-                Line::from(format!(
-                    "{} fichier(s) versionné(s), {} d'anciennes versions",
-                    fmt_count(p.targets.len() as i64),
-                    fmt_size(total)
-                ))
-                .dim(),
-                Line::default(),
-            ];
-            for i in 0..RULE_CHOICES {
-                let text = match i {
-                    0 => format!(
-                        "Garder les ◀ {} ▶ dernières versions (courante comprise)",
-                        p.keep_n
-                    ),
-                    1 => format!("Supprimer les versions de plus de ◀ {} ▶ jours", p.days),
-                    _ => "Supprimer tout sauf la version courante".into(),
-                };
-                let selected = i == p.selected;
-                lines.push(Line::from(vec![
-                    Span::raw(if selected { "▶ " } else { "  " }),
-                    Span::styled(text, if selected { highlight() } else { Style::new() }),
-                ]));
-            }
-            lines.push(Line::default());
-            lines.push(
-                Line::from("↑↓ choisir · ←→ ou chiffres : paramètre · Entrée : aperçu (rien n'est supprimé) · Échap")
-                    .dim(),
-            );
-            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-        }
+        Overlay::Help => draw_help(f),
+        Overlay::DrivePicker(state) => draw_drive_picker(f, &app.drives, state),
+        Overlay::Versions(view) => draw_versions(f, view, full_w, full_h),
+        Overlay::RulePicker(p) => draw_rule_picker(f, p),
         Overlay::Preparing {
             label,
             done,
             total,
             started,
-        } => {
-            let inner = popup(f, 70, 7, "Préparation de l'aperçu", ACCENT);
-            let [l1, l2, _, l3] = Layout::vertical([Constraint::Length(1); 4]).areas(inner);
-            f.render_widget(Paragraph::new(format!("Cible : {label}")), l1);
-            let ratio = if *total == 0 {
-                0.0
-            } else {
-                *done as f64 / *total as f64
-            };
-            let elapsed = started.elapsed().as_secs_f64();
-            let eta = if *done > 0 {
-                let secs = elapsed / *done as f64 * (*total - *done) as f64;
-                format!(" · reste ~{}", fmt_duration(secs as u64))
-            } else {
-                format!(
-                    " · jusqu'à ~{} (60 requêtes/min)",
-                    fmt_duration(*total as u64)
-                )
-            };
-            f.render_widget(
-                Gauge::default()
-                    .ratio(ratio)
-                    .label(format!("Chargement des versions {done}/{total}{eta}"))
-                    .gauge_style(Style::new().fg(ACCENT).bg(Color::Black)),
-                l2,
-            );
-            f.render_widget(Paragraph::new("Échap pour annuler").dim(), l3);
-        }
-        Overlay::Preview { plan, state } => {
-            let inner = popup(
-                f,
-                full_w.min(120),
-                full_h,
-                "Aperçu — rien n'a encore été supprimé",
-                Color::Yellow,
-            );
-            let [info, table_area, help] = Layout::vertical([
-                Constraint::Length(3),
-                Constraint::Min(3),
-                Constraint::Length(1),
-            ])
-            .areas(inner);
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::raw("Règle : ").dim(),
-                    Span::raw(plan.rule.clone()).bold(),
-                ]),
-                Line::from(vec![
-                    Span::raw(format!(
-                        "{} version(s) à supprimer dans {} fichier(s) ({} analysés) — espace libéré : ",
-                        fmt_count(plan.items.len() as i64),
-                        fmt_count(plan.files_affected as i64),
-                        fmt_count(plan.files_checked as i64)
-                    )),
-                    Span::styled(
-                        fmt_size(plan.total_size),
-                        Style::new().fg(Color::Yellow).bold(),
-                    ),
-                ]),
-            ];
-            if !plan.errors.is_empty() {
-                lines.push(
-                    Line::from(format!(
-                        "{} fichier(s) ignoré(s) (versions illisibles) : {}",
-                        plan.errors.len(),
-                        plan.errors[0]
-                    ))
-                    .fg(DANGER),
-                );
-            }
-            f.render_widget(Paragraph::new(lines), info);
-            let rows = plan.items.iter().map(|i| {
-                Row::new(vec![
-                    Cell::from(i.path.clone()),
-                    Cell::from(fmt_date(i.created_at)),
-                    Cell::from(fmt_size(i.size)),
-                ])
-            });
-            let table = Table::new(
-                rows,
-                [
-                    Constraint::Min(30),
-                    Constraint::Length(16),
-                    Constraint::Length(10),
-                ],
-            )
-            .header(
-                Row::new(["Fichier", "Version du", "Taille"])
-                    .style(Style::new().bold().underlined()),
-            )
-            .row_highlight_style(highlight());
-            f.render_stateful_widget(table, table_area, state);
-            let text = if plan.items.is_empty() {
-                "Rien à supprimer avec cette règle. Échap pour fermer."
-            } else {
-                "Entrée : passer à la confirmation · Échap : abandonner"
-            };
-            f.render_widget(Paragraph::new(text).dim(), help);
-        }
-        Overlay::Confirm { plan, input } => {
-            let inner = popup(f, 64, 9, "Confirmer la suppression", DANGER);
-            let lines = vec![
-                Line::from(format!(
-                    "Supprimer définitivement {} version(s) ({}) ?",
-                    fmt_count(plan.items.len() as i64),
-                    fmt_size(plan.total_size)
-                ))
-                .bold(),
-                Line::from("Cette opération est irréversible.").fg(DANGER),
-                Line::default(),
-                Line::from(vec![
-                    Span::raw("Tapez « oui » puis Entrée : "),
-                    Span::styled(
-                        format!("{input}▏"),
-                        Style::new().fg(Color::Black).bg(Color::Yellow),
-                    ),
-                ]),
-                Line::default(),
-                Line::from("Échap : revenir à l'aperçu").dim(),
-            ];
-            f.render_widget(Paragraph::new(lines), inner);
-        }
+        } => draw_preparing(f, label, *done, *total, *started),
+        Overlay::Preview { plan, state } => draw_preview(f, plan, state, full_w, full_h),
+        Overlay::Confirm { plan, input } => draw_confirm(f, plan, input),
         Overlay::Executing {
             done,
             total,
             freed,
             failed,
-        } => {
-            let inner = popup(f, 70, 6, "Suppression en cours", DANGER);
-            let [l1, _, l2] = Layout::vertical([Constraint::Length(1); 3]).areas(inner);
-            let ratio = if *total == 0 {
-                0.0
-            } else {
-                *done as f64 / *total as f64
-            };
-            f.render_widget(
-                Gauge::default()
-                    .ratio(ratio)
-                    .label(format!(
-                        "{done}/{total} · {} libérés · {failed} échec(s) · reste ~{}",
-                        fmt_size(*freed),
-                        fmt_duration((*total - *done) as u64)
-                    ))
-                    .gauge_style(Style::new().fg(DANGER).bg(Color::Black)),
-                l1,
-            );
-            f.render_widget(
-                Paragraph::new("Échap pour arrêter après la version en cours").dim(),
-                l2,
-            );
+        } => draw_executing(f, *done, *total, *freed, *failed),
+        Overlay::Summary(s) => draw_summary(f, s),
+    }
+}
+
+fn draw_help(f: &mut Frame) {
+    let inner = popup(f, 70, 24, "Aide", ACCENT);
+    let lines: Vec<Line> = [
+        ("1-5, Tab", "changer d'onglet"),
+        ("↑↓ j k, PgUp PgDn, g G", "naviguer"),
+        (
+            "Entrée / →",
+            "ouvrir un dossier, voir les versions d'un fichier",
+        ),
+        ("← / Retour arrière", "dossier parent"),
+        ("c", "nettoyer l'élément sélectionné (fichier ou dossier)"),
+        ("C", "nettoyer tout le dossier / top / résultats"),
+        (
+            "Espace (versions)",
+            "cocher une version pour une suppression manuelle",
+        ),
+        (
+            "c (versions)",
+            "supprimer les versions cochées, sinon choisir une règle",
+        ),
+        ("/", "modifier la recherche"),
+        ("e (journal)", "exporter le journal en CSV"),
+        ("r", "rescanner le drive"),
+        ("d", "changer de drive"),
+        ("Échap", "fermer / annuler une opération"),
+        ("q, Ctrl+C", "quitter"),
+        ("", ""),
+        ("Sécurité", "la version courante et les versions"),
+        (
+            "",
+            "« conservées pour toujours » ne sont jamais supprimées.",
+        ),
+        ("", "Toute suppression passe par un aperçu puis « oui »."),
+    ]
+    .iter()
+    .map(|(k, v)| {
+        Line::from(vec![
+            Span::styled(format!("{k:<24}"), Style::new().fg(ACCENT)),
+            Span::raw(*v),
+        ])
+    })
+    .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_drive_picker(f: &mut Frame, drives: &[Drive], state: &mut TableState) {
+    let inner = popup(
+        f,
+        60,
+        (drives.len() as u16 + 4).min(20),
+        "Choisir un drive",
+        ACCENT,
+    );
+    let rows = drives.iter().map(|d| {
+        Row::new(vec![
+            Cell::from(d.name.clone()),
+            Cell::from(d.used_size.map(fmt_size).unwrap_or_default()),
+            Cell::from(format!("#{}", d.id)).dim(),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(20),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ],
+    )
+    .row_highlight_style(highlight())
+    .highlight_symbol("▶ ");
+    f.render_stateful_widget(table, inner, state);
+}
+
+fn draw_versions(f: &mut Frame, view: &mut VersionsView, full_w: u16, full_h: u16) {
+    let title = format!("Versions — {}", view.entry.path);
+    let inner = popup(f, full_w.min(100), full_h.min(30), &title, ACCENT);
+    let [info, table_area, help] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    f.render_widget(
+        Paragraph::new(format!(
+            "Taille courante : {} · {} versions · anciennes versions : {}",
+            fmt_size(view.entry.size),
+            view.entry.nb_versions,
+            fmt_size(view.entry.versions_size)
+        )),
+        info,
+    );
+    match (&view.versions, &view.error) {
+        (_, Some(e)) => f.render_widget(
+            Paragraph::new(format!("Erreur : {e}"))
+                .fg(DANGER)
+                .wrap(Wrap { trim: true }),
+            table_area,
+        ),
+        (None, None) => {
+            f.render_widget(Paragraph::new("Chargement des versions…").dim(), table_area)
         }
-        Overlay::Summary(s) => {
-            let inner = popup(
-                f,
-                80,
-                12,
-                "Terminé",
-                if s.failed > 0 { DANGER } else { Color::Green },
-            );
-            let mut lines = vec![
-                Line::from(format!(
-                    "{} version(s) supprimée(s), {} libérés.",
-                    fmt_count(s.deleted as i64),
-                    fmt_size(s.freed)
-                ))
-                .bold(),
-            ];
-            if s.cancelled {
-                lines.push(Line::from("Opération interrompue.").fg(Color::Yellow));
-            }
-            if s.failed > 0 {
-                lines.push(Line::from(format!("{} échec(s) :", s.failed)).fg(DANGER));
-            }
-            for e in s.errors.iter().take(4) {
-                lines.push(Line::from(format!("  {e}")).fg(DANGER));
-            }
-            lines.push(Line::default());
-            lines.push(Line::from("Détails dans l'onglet Journal. Entrée pour fermer.").dim());
-            f.render_widget(
-                Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-                inner,
-            );
+        (Some(versions), None) => {
+            let rows = versions.iter().map(|v| {
+                let is_current = Some(v.id) == view.current_id;
+                let mark = if view.marked.contains(&v.id) {
+                    "[x]"
+                } else if is_current || v.keep_forever {
+                    "   "
+                } else {
+                    "[ ]"
+                };
+                let note = if is_current {
+                    "protégée (plus récente)"
+                } else if v.keep_forever {
+                    "conservée pour toujours"
+                } else {
+                    ""
+                };
+                let style = if view.marked.contains(&v.id) {
+                    Style::new().fg(DANGER)
+                } else if is_current {
+                    Style::new().fg(Color::Green)
+                } else {
+                    Style::new()
+                };
+                Row::new(vec![
+                    Cell::from(mark),
+                    Cell::from(fmt_date(v.created_at)),
+                    Cell::from(fmt_size(v.size)),
+                    Cell::from(note),
+                    Cell::from(format!("#{}", v.id)).dim(),
+                ])
+                .style(style)
+            });
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Length(3),
+                    Constraint::Length(16),
+                    Constraint::Length(10),
+                    Constraint::Length(24),
+                    Constraint::Min(8),
+                ],
+            )
+            .header(
+                Row::new(["", "Date", "Taille", "", "Id"]).style(Style::new().bold().underlined()),
+            )
+            .row_highlight_style(highlight())
+            .highlight_symbol("▶ ");
+            f.render_stateful_widget(table, table_area, &mut view.state);
         }
     }
+    let marked: i64 = view
+        .versions
+        .iter()
+        .flatten()
+        .filter(|v| view.marked.contains(&v.id))
+        .map(|v| v.size)
+        .sum();
+    let text = if view.marked.is_empty() {
+        "Espace cocher · c appliquer une règle · Échap fermer".to_string()
+    } else {
+        format!(
+            "{} cochée(s), {} · c supprimer la sélection · Échap fermer",
+            view.marked.len(),
+            fmt_size(marked)
+        )
+    };
+    f.render_widget(Paragraph::new(text).dim(), help);
+}
+
+fn draw_rule_picker(f: &mut Frame, p: &RulePicker) {
+    let inner = popup(f, 72, 13, "Règle de nettoyage", ACCENT);
+    let total: i64 = p.targets.iter().map(|e| e.versions_size).sum();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw("Cible : ").dim(),
+            Span::raw(p.label.clone()).bold(),
+        ]),
+        Line::from(format!(
+            "{} fichier(s) versionné(s), {} d'anciennes versions",
+            fmt_count(p.targets.len() as i64),
+            fmt_size(total)
+        ))
+        .dim(),
+        Line::default(),
+    ];
+    for i in 0..RULE_CHOICES {
+        let text = match i {
+            0 => format!(
+                "Garder les ◀ {} ▶ dernières versions (courante comprise)",
+                p.keep_n
+            ),
+            1 => format!("Supprimer les versions de plus de ◀ {} ▶ jours", p.days),
+            _ => "Supprimer tout sauf la version courante".into(),
+        };
+        let selected = i == p.selected;
+        lines.push(Line::from(vec![
+            Span::raw(if selected { "▶ " } else { "  " }),
+            Span::styled(text, if selected { highlight() } else { Style::new() }),
+        ]));
+    }
+    lines.push(Line::default());
+    lines.push(
+            Line::from("↑↓ choisir · ←→ ou chiffres : paramètre · Entrée : aperçu (rien n'est supprimé) · Échap")
+                .dim(),
+        );
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn draw_preparing(f: &mut Frame, label: &str, done: usize, total: usize, started: Instant) {
+    let inner = popup(f, 70, 7, "Préparation de l'aperçu", ACCENT);
+    let [l1, l2, _, l3] = Layout::vertical([Constraint::Length(1); 4]).areas(inner);
+    f.render_widget(Paragraph::new(format!("Cible : {label}")), l1);
+    let ratio = if total == 0 {
+        0.0
+    } else {
+        done as f64 / total as f64
+    };
+    let elapsed = started.elapsed().as_secs_f64();
+    let eta = if done > 0 {
+        let secs = elapsed / done as f64 * (total - done) as f64;
+        format!(" · reste ~{}", fmt_duration(secs as u64))
+    } else {
+        format!(
+            " · jusqu'à ~{} (60 requêtes/min)",
+            fmt_duration(total as u64)
+        )
+    };
+    f.render_widget(
+        Gauge::default()
+            .ratio(ratio)
+            .label(format!("Chargement des versions {done}/{total}{eta}"))
+            .gauge_style(Style::new().fg(ACCENT).bg(Color::Black)),
+        l2,
+    );
+    f.render_widget(Paragraph::new("Échap pour annuler").dim(), l3);
+}
+
+fn draw_preview(f: &mut Frame, plan: &Plan, state: &mut TableState, full_w: u16, full_h: u16) {
+    let inner = popup(
+        f,
+        full_w.min(120),
+        full_h,
+        "Aperçu — rien n'a encore été supprimé",
+        Color::Yellow,
+    );
+    let [info, table_area, help] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw("Règle : ").dim(),
+            Span::raw(plan.rule.clone()).bold(),
+        ]),
+        Line::from(vec![
+            Span::raw(format!(
+                "{} version(s) à supprimer dans {} fichier(s) ({} analysés) — espace libéré : ",
+                fmt_count(plan.items.len() as i64),
+                fmt_count(plan.files_affected as i64),
+                fmt_count(plan.files_checked as i64)
+            )),
+            Span::styled(
+                fmt_size(plan.total_size),
+                Style::new().fg(Color::Yellow).bold(),
+            ),
+        ]),
+    ];
+    if !plan.errors.is_empty() {
+        lines.push(
+            Line::from(format!(
+                "{} fichier(s) ignoré(s) (versions illisibles) : {}",
+                plan.errors.len(),
+                plan.errors[0]
+            ))
+            .fg(DANGER),
+        );
+    }
+    f.render_widget(Paragraph::new(lines), info);
+    let rows = plan.items.iter().map(|i| {
+        Row::new(vec![
+            Cell::from(i.path.clone()),
+            Cell::from(fmt_date(i.created_at)),
+            Cell::from(fmt_size(i.size)),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(30),
+            Constraint::Length(16),
+            Constraint::Length(10),
+        ],
+    )
+    .header(Row::new(["Fichier", "Version du", "Taille"]).style(Style::new().bold().underlined()))
+    .row_highlight_style(highlight());
+    f.render_stateful_widget(table, table_area, state);
+    let text = if plan.items.is_empty() {
+        "Rien à supprimer avec cette règle. Échap pour fermer."
+    } else {
+        "Entrée : passer à la confirmation · Échap : abandonner"
+    };
+    f.render_widget(Paragraph::new(text).dim(), help);
+}
+
+fn draw_confirm(f: &mut Frame, plan: &Plan, input: &str) {
+    let inner = popup(f, 64, 9, "Confirmer la suppression", DANGER);
+    let lines = vec![
+        Line::from(format!(
+            "Supprimer définitivement {} version(s) ({}) ?",
+            fmt_count(plan.items.len() as i64),
+            fmt_size(plan.total_size)
+        ))
+        .bold(),
+        Line::from("Cette opération est irréversible.").fg(DANGER),
+        Line::default(),
+        Line::from(vec![
+            Span::raw("Tapez « oui » puis Entrée : "),
+            Span::styled(
+                format!("{input}▏"),
+                Style::new().fg(Color::Black).bg(Color::Yellow),
+            ),
+        ]),
+        Line::default(),
+        Line::from("Échap : revenir à l'aperçu").dim(),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_executing(f: &mut Frame, done: usize, total: usize, freed: i64, failed: usize) {
+    let inner = popup(f, 70, 6, "Suppression en cours", DANGER);
+    let [l1, _, l2] = Layout::vertical([Constraint::Length(1); 3]).areas(inner);
+    let ratio = if total == 0 {
+        0.0
+    } else {
+        done as f64 / total as f64
+    };
+    f.render_widget(
+        Gauge::default()
+            .ratio(ratio)
+            .label(format!(
+                "{done}/{total} · {} libérés · {failed} échec(s) · reste ~{}",
+                fmt_size(freed),
+                fmt_duration((total - done) as u64)
+            ))
+            .gauge_style(Style::new().fg(DANGER).bg(Color::Black)),
+        l1,
+    );
+    f.render_widget(
+        Paragraph::new("Échap pour arrêter après la version en cours").dim(),
+        l2,
+    );
+}
+
+fn draw_summary(f: &mut Frame, s: &ExecSummary) {
+    let inner = popup(
+        f,
+        80,
+        12,
+        "Terminé",
+        if s.failed > 0 { DANGER } else { Color::Green },
+    );
+    let mut lines = vec![
+        Line::from(format!(
+            "{} version(s) supprimée(s), {} libérés.",
+            fmt_count(s.deleted as i64),
+            fmt_size(s.freed)
+        ))
+        .bold(),
+    ];
+    if s.cancelled {
+        lines.push(Line::from("Opération interrompue.").fg(Color::Yellow));
+    }
+    if s.failed > 0 {
+        lines.push(Line::from(format!("{} échec(s) :", s.failed)).fg(DANGER));
+    }
+    for e in s.errors.iter().take(4) {
+        lines.push(Line::from(format!("  {e}")).fg(DANGER));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from("Détails dans l'onglet Journal. Entrée pour fermer.").dim());
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 #[cfg(test)]

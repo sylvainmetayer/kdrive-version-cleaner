@@ -98,6 +98,86 @@ impl RulePicker {
     }
 }
 
+/// Suite à donner à une touche dans le sélecteur de règle.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PickerAction {
+    None,
+    Close,
+    Invalid,
+    Apply(Rule),
+}
+
+impl RulePicker {
+    pub fn on_key(&mut self, code: KeyCode) -> PickerAction {
+        match code {
+            KeyCode::Esc => return PickerAction::Close,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected = self.selected.saturating_sub(1);
+                self.typed = false;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = (self.selected + 1).min(RULE_CHOICES - 1);
+                self.typed = false;
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('-' | '+') => {
+                let step: i64 = if self.selected == 1 { 30 } else { 1 };
+                let down = matches!(code, KeyCode::Left | KeyCode::Char('-'));
+                // On garde au moins la version courante.
+                let min = if self.selected == 0 { 1 } else { 0 };
+                if let Some(param) = self.param() {
+                    let v = param.parse::<i64>().unwrap_or(0) + if down { -step } else { step };
+                    *param = v.clamp(min, 99_999).to_string();
+                }
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                let first = !std::mem::replace(&mut self.typed, true);
+                if let Some(param) = self.param() {
+                    if first || param == "0" {
+                        param.clear();
+                    }
+                    if param.len() < 5 {
+                        param.push(c);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(param) = self.param() {
+                    param.pop();
+                }
+            }
+            KeyCode::Enter => {
+                return match self.rule(self.selected) {
+                    Some(rule) => PickerAction::Apply(rule),
+                    None => PickerAction::Invalid,
+                };
+            }
+            _ => {}
+        }
+        PickerAction::None
+    }
+}
+
+impl VersionsView {
+    /// Coche ou décoche la version sélectionnée, sauf si elle est protégée.
+    pub fn toggle_selected(&mut self) {
+        let len = self.versions.as_ref().map_or(0, Vec::len);
+        let selected = self
+            .state
+            .selected()
+            .and_then(|i| self.versions.as_ref()?.get(i));
+        if let Some(v) = selected
+            && Some(v.id) != self.current_id
+            && !v.keep_forever
+        {
+            let id = v.id;
+            if !self.marked.remove(&id) {
+                self.marked.insert(id);
+            }
+            navigate(&mut self.state, len, KeyCode::Down);
+        }
+    }
+}
+
 pub enum Overlay {
     None,
     DrivePicker(TableState),
@@ -137,7 +217,7 @@ pub struct SearchForm {
 }
 
 impl SearchForm {
-    pub const LABELS: [&'static str; 4] = ["Nom", "Extension", "Taille min. (Mo)", "Versions min."];
+    pub const LABELS: [&str; 4] = ["Nom", "Extension", "Taille min. (Mo)", "Versions min."];
 
     fn filter(&self) -> SearchFilter {
         SearchFilter {
@@ -610,8 +690,8 @@ impl App {
 
     fn on_overlay_key(&mut self, key: KeyEvent) -> Result<()> {
         let code = key.code;
-        match &mut self.overlay {
-            Overlay::None => {}
+        match self.overlay {
+            Overlay::None => Ok(()),
             Overlay::Help | Overlay::Summary(_) => {
                 if matches!(
                     code,
@@ -619,111 +699,17 @@ impl App {
                 ) {
                     self.overlay = Overlay::None;
                 }
+                Ok(())
             }
-            Overlay::DrivePicker(state) => {
-                if navigate(state, self.drives.len(), code) {
-                    return Ok(());
-                }
-                match code {
-                    KeyCode::Enter => {
-                        if let Some(d) = state.selected().and_then(|i| self.drives.get(i)) {
-                            let id = d.id;
-                            self.overlay = Overlay::None;
-                            let rescan = std::mem::take(&mut self.rescan_on_select);
-                            self.select_drive(id, rescan)?;
-                        }
-                    }
-                    KeyCode::Esc if self.drive.is_some() => self.overlay = Overlay::None,
-                    KeyCode::Char('q') if self.drive.is_none() => self.quit = true,
-                    _ => {}
-                }
+            Overlay::DrivePicker(_) => self.on_drive_picker_key(code),
+            Overlay::Versions(_) => {
+                self.on_versions_key(code);
+                Ok(())
             }
-            Overlay::Versions(view) => {
-                let len = view.versions.as_ref().map_or(0, Vec::len);
-                if navigate(&mut view.state, len, code) {
-                    return Ok(());
-                }
-                match code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
-                    KeyCode::Char(' ') => {
-                        let selected = view
-                            .state
-                            .selected()
-                            .and_then(|i| view.versions.as_ref()?.get(i));
-                        if let Some(v) = selected
-                            && Some(v.id) != view.current_id
-                            && !v.keep_forever
-                        {
-                            let id = v.id;
-                            if !view.marked.remove(&id) {
-                                view.marked.insert(id);
-                            }
-                            navigate(&mut view.state, len, KeyCode::Down);
-                        }
-                    }
-                    KeyCode::Char('c') if view.versions.is_some() => {
-                        let entry = view.entry.clone();
-                        if view.marked.is_empty() {
-                            self.open_rule_picker(entry.path.clone(), vec![entry]);
-                        } else {
-                            let rule = Rule::Manual(view.marked.clone());
-                            self.start_prepare(entry.path.clone(), vec![entry], rule);
-                        }
-                    }
-                    _ => {}
-                }
+            Overlay::RulePicker(_) => {
+                self.on_rule_picker_key(code);
+                Ok(())
             }
-            Overlay::RulePicker(p) => match code {
-                KeyCode::Esc => self.overlay = Overlay::None,
-                KeyCode::Up | KeyCode::Char('k') => {
-                    p.selected = p.selected.saturating_sub(1);
-                    p.typed = false;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    p.selected = (p.selected + 1).min(RULE_CHOICES - 1);
-                    p.typed = false;
-                }
-                KeyCode::Left | KeyCode::Right | KeyCode::Char('-' | '+') => {
-                    let step: i64 = if p.selected == 1 { 30 } else { 1 };
-                    let delta = if matches!(code, KeyCode::Left | KeyCode::Char('-')) {
-                        -step
-                    } else {
-                        step
-                    };
-                    // On garde au moins la version courante.
-                    let min = if p.selected == 0 { 1 } else { 0 };
-                    if let Some(param) = p.param() {
-                        let v = param.parse::<i64>().unwrap_or(0) + delta;
-                        *param = v.clamp(min, 99_999).to_string();
-                    }
-                }
-                KeyCode::Char(c) if c.is_ascii_digit() => {
-                    let first = !std::mem::replace(&mut p.typed, true);
-                    if let Some(param) = p.param() {
-                        if first || param == "0" {
-                            param.clear();
-                        }
-                        if param.len() < 5 {
-                            param.push(c);
-                        }
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some(param) = p.param() {
-                        param.pop();
-                    }
-                }
-                KeyCode::Enter => {
-                    let Some(rule) = p.rule(p.selected) else {
-                        self.status = "Paramètre invalide : saisissez un nombre (au moins 1 version à garder).".into();
-                        return Ok(());
-                    };
-                    let label = std::mem::take(&mut p.label);
-                    let targets = std::mem::take(&mut p.targets);
-                    self.start_prepare(label, targets, rule);
-                }
-                _ => {}
-            },
             Overlay::Preparing { .. } | Overlay::Executing { .. } => {
                 if code == KeyCode::Esc
                     && let Some(c) = &self.cancel
@@ -731,42 +717,126 @@ impl App {
                     c.store(true, Ordering::Relaxed);
                     self.status = "Annulation…".into();
                 }
+                Ok(())
             }
-            Overlay::Preview { plan, state } => {
-                if navigate(state, plan.items.len(), code) {
-                    return Ok(());
-                }
-                match code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
-                    KeyCode::Enter | KeyCode::Char('y') if !plan.items.is_empty() => {
-                        let plan = std::mem::take(plan);
-                        self.overlay = Overlay::Confirm {
-                            plan,
-                            input: String::new(),
-                        };
-                    }
-                    _ => {}
+            Overlay::Preview { .. } => {
+                self.on_preview_key(code);
+                Ok(())
+            }
+            Overlay::Confirm { .. } => {
+                self.on_confirm_key(code);
+                Ok(())
+            }
+        }
+    }
+
+    fn on_drive_picker_key(&mut self, code: KeyCode) -> Result<()> {
+        let Overlay::DrivePicker(state) = &mut self.overlay else {
+            return Ok(());
+        };
+        if navigate(state, self.drives.len(), code) {
+            return Ok(());
+        }
+        match code {
+            KeyCode::Enter => {
+                if let Some(d) = state.selected().and_then(|i| self.drives.get(i)) {
+                    let id = d.id;
+                    self.overlay = Overlay::None;
+                    let rescan = std::mem::take(&mut self.rescan_on_select);
+                    self.select_drive(id, rescan)?;
                 }
             }
-            Overlay::Confirm { plan, input } => match code {
-                KeyCode::Esc => {
-                    let plan = std::mem::take(plan);
-                    let mut state = TableState::default();
-                    clamp(&mut state, plan.items.len());
-                    self.overlay = Overlay::Preview { plan, state };
-                }
-                KeyCode::Backspace => {
-                    input.pop();
-                }
-                KeyCode::Char(c) if input.len() < 10 => input.push(c),
-                KeyCode::Enter if input.trim().eq_ignore_ascii_case("oui") => {
-                    let plan = std::mem::take(plan);
-                    self.start_execute(plan);
-                }
-                _ => {}
-            },
+            KeyCode::Esc if self.drive.is_some() => self.overlay = Overlay::None,
+            KeyCode::Char('q') if self.drive.is_none() => self.quit = true,
+            _ => {}
         }
         Ok(())
+    }
+
+    fn on_versions_key(&mut self, code: KeyCode) {
+        let Overlay::Versions(view) = &mut self.overlay else {
+            return;
+        };
+        let len = view.versions.as_ref().map_or(0, Vec::len);
+        if navigate(&mut view.state, len, code) {
+            return;
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
+            KeyCode::Char(' ') => view.toggle_selected(),
+            KeyCode::Char('c') if view.versions.is_some() => {
+                let entry = view.entry.clone();
+                if view.marked.is_empty() {
+                    self.open_rule_picker(entry.path.clone(), vec![entry]);
+                } else {
+                    let rule = Rule::Manual(view.marked.clone());
+                    self.start_prepare(entry.path.clone(), vec![entry], rule);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_rule_picker_key(&mut self, code: KeyCode) {
+        let Overlay::RulePicker(p) = &mut self.overlay else {
+            return;
+        };
+        match p.on_key(code) {
+            PickerAction::None => {}
+            PickerAction::Close => self.overlay = Overlay::None,
+            PickerAction::Invalid => {
+                self.status =
+                    "Paramètre invalide : saisissez un nombre (au moins 1 version à garder).".into()
+            }
+            PickerAction::Apply(rule) => {
+                let label = std::mem::take(&mut p.label);
+                let targets = std::mem::take(&mut p.targets);
+                self.start_prepare(label, targets, rule);
+            }
+        }
+    }
+
+    fn on_preview_key(&mut self, code: KeyCode) {
+        let Overlay::Preview { plan, state } = &mut self.overlay else {
+            return;
+        };
+        if navigate(state, plan.items.len(), code) {
+            return;
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
+            KeyCode::Enter | KeyCode::Char('y') if !plan.items.is_empty() => {
+                let plan = std::mem::take(plan);
+                self.overlay = Overlay::Confirm {
+                    plan,
+                    input: String::new(),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    fn on_confirm_key(&mut self, code: KeyCode) {
+        let Overlay::Confirm { plan, input } = &mut self.overlay else {
+            return;
+        };
+        match code {
+            KeyCode::Esc => {
+                let plan = std::mem::take(plan);
+                let mut state = TableState::default();
+                clamp(&mut state, plan.items.len());
+                self.overlay = Overlay::Preview { plan, state };
+            }
+            KeyCode::Backspace => {
+                input.pop();
+            }
+            KeyCode::Char(c) if input.len() < 10 => input.push(c),
+            KeyCode::Enter if input.trim().eq_ignore_ascii_case("oui") => {
+                let plan = std::mem::take(plan);
+                self.start_execute(plan);
+            }
+            _ => {}
+        }
     }
 
     // ---------- actions ----------

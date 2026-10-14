@@ -79,8 +79,13 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 
 ## Tests
 
-- Unitaires : inline (`#[cfg(test)]`) dans `rules.rs`, `db.rs` (SQLite en mémoire via `Db::open_in_memory`) et `ui.rs`.
-- Intégration HTTP : `tests/api.rs` avec `wiremock`, et `Client::with_options(token, server.uri(), Duration::ZERO)` pour désactiver le rate limit.
+- **Unitaires** : écrits directement dans les fichiers (`#[cfg(test)]`) de `rules.rs`, `db.rs` (SQLite en mémoire via `Db::open_in_memory`), `app.rs` et `ui.rs`.
+- **Intégration** (`tests/`), tous contre une API simulée par `wiremock`. Le module `tests/common/mod.rs` fournit le jeu de données, les mocks et `client()`, sans limite de débit.
+  - `api.rs` : client HTTP (pagination, 429, erreurs, DELETE non rejoué).
+  - `cleaner.rs` : aperçu et exécution d'un nettoyage, journal, annulation, cache des versions.
+  - `scanner.rs` : scan complet, scan partiel, échecs.
+  - `app.rs` : parcours clavier complet de la TUI, vérifié sur le rendu d'un `TestBackend` ratatui.
+- **Couverture** : `cargo llvm-cov --all-targets --summary-only`. Seuls `main.rs` et `config.rs` (terminal réel, fichiers utilisateur) ne sont pas couverts.
 
 ## CI/CD (`.github/workflows/`)
 
