@@ -377,8 +377,13 @@ impl App {
             AppEvent::ScanDone(res) => {
                 self.scan = None;
                 match res {
-                    Ok(()) => {
+                    Ok(failed) => {
                         self.status = match self.refresh() {
+                            Ok(()) if !failed.is_empty() => format!(
+                                "Scan partiel : {} dossier(s) non scanné(s), laissés vides : {}",
+                                failed.len(),
+                                failed.join(", ")
+                            ),
                             Ok(()) => format!(
                                 "Scan terminé : {} fichiers, {} versionnés.",
                                 crate::ui::fmt_count(self.stats.files),
@@ -398,6 +403,8 @@ impl App {
                         Ok(mut versions) => {
                             rules::sort_newest_first(&mut versions);
                             view.current_id = rules::current_version_id(&versions);
+                            view.entry.nb_versions =
+                                view.entry.nb_versions.max(versions.len() as i64);
                             clamp(&mut view.state, versions.len());
                             view.versions = Some(versions);
                         }
@@ -875,7 +882,13 @@ impl App {
         if self.scan_blocks_cleanup() {
             return;
         }
-        let targets: Vec<Entry> = targets.into_iter().filter(|e| e.nb_versions > 1).collect();
+        // Pour un fichier seul, on laisse l'aperçu charger ses versions : le compte
+        // du scan peut être périmé. Pour une liste, on évite une requête par fichier.
+        let targets: Vec<Entry> = if targets.len() == 1 {
+            targets.into_iter().filter(|e| !e.is_dir).collect()
+        } else {
+            targets.into_iter().filter(|e| e.nb_versions > 1).collect()
+        };
         if targets.is_empty() {
             self.overlay = Overlay::None;
             self.status = "Aucune ancienne version dans la sélection.".into();

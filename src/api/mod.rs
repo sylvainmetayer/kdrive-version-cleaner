@@ -211,9 +211,18 @@ impl Client {
                 &query,
             )
             .await?;
+        let has_more = env.has_more.unwrap_or(false);
+        if has_more && env.cursor.is_none() {
+            bail!(
+                "/3/drive/{drive_id}/files/{dir_id}/files : has_more sans curseur, liste incomplète"
+            );
+        }
+        if has_more && env.cursor.as_deref() == cursor {
+            bail!("/3/drive/{drive_id}/files/{dir_id}/files : curseur répété, pagination bloquée");
+        }
         Ok(CursorPage {
             items: env.data.unwrap_or_default(),
-            has_more: env.has_more.unwrap_or(false) && env.cursor.is_some(),
+            has_more,
             cursor: env.cursor,
         })
     }
@@ -242,11 +251,20 @@ impl Client {
                 )
                 .await?;
             versions.extend(env.data.unwrap_or_default());
-            if env.has_more == Some(true)
-                && let Some(c) = env.cursor
-            {
-                cursor = Some(c);
-                continue;
+            let path = format!("/3/drive/{drive_id}/files/{file_id}/versions");
+            if env.has_more == Some(true) {
+                match env.cursor {
+                    Some(c) if Some(&c) == cursor.as_ref() => {
+                        bail!("{path} : curseur répété, pagination bloquée")
+                    }
+                    Some(c) => {
+                        cursor = Some(c);
+                        continue;
+                    }
+                    // Réponse paginée par page qui annonce aussi has_more.
+                    None if cursor.is_none() && page < env.pages.unwrap_or(1) => {}
+                    None => bail!("{path} : has_more sans curseur, liste incomplète"),
+                }
             }
             if cursor.is_some() || page >= env.pages.unwrap_or(1) {
                 break;

@@ -44,18 +44,23 @@ pub struct ExecSummary {
 
 pub type Cancel = Arc<AtomicBool>;
 
-/// Versions d'un fichier, depuis le cache ou l'API.
+/// Au-delà, une liste de versions en cache est rechargée depuis l'API.
+const VERSIONS_TTL_SECS: i64 = 3600;
+
+/// Versions d'un fichier, depuis le cache (si récent) ou l'API.
 pub async fn load_versions(
     client: &Client,
     db: &mut Db,
     drive_id: i64,
     file_id: i64,
 ) -> Result<Vec<crate::api::Version>> {
-    if let Some(v) = db.cached_versions(drive_id, file_id)? {
+    let now = now();
+    if let Some(v) = db.cached_versions(drive_id, file_id, now - VERSIONS_TTL_SECS)? {
         return Ok(v);
     }
     let versions = client.list_versions(drive_id, file_id).await?;
-    db.save_versions(drive_id, file_id, &versions, now())?;
+    db.save_versions(drive_id, file_id, &versions, now)?;
+    db.sync_version_count(drive_id, file_id, &versions)?;
     Ok(versions)
 }
 
@@ -78,7 +83,8 @@ pub async fn prepare(
         };
         let targets: Vec<Entry> = targets
             .into_iter()
-            .filter(|e| !e.is_dir && e.nb_versions > 1)
+            // Pas de filtre sur nb_versions : le compte du scan peut être périmé.
+            .filter(|e| !e.is_dir)
             .collect();
         let total = targets.len();
         let now = now();

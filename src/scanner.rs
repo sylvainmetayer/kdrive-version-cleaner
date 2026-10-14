@@ -11,6 +11,8 @@ use crate::events::AppEvent;
 ///
 /// L'API refuse `depth=unlimited` sur la racine : on liste d'abord la racine,
 /// puis chaque dossier de premier niveau en profondeur illimitée.
+/// Un dossier en échec est signalé et laissé vide, sans bloquer le reste ;
+/// si tous échouent, le cache n'est pas modifié.
 pub async fn scan(client: Client, db_path: PathBuf, drive_id: i64, tx: UnboundedSender<AppEvent>) {
     let result = run(&client, db_path, drive_id, &tx).await;
     let _ = tx.send(AppEvent::ScanDone(result.map_err(|e| format!("{e:#}"))));
@@ -43,7 +45,7 @@ async fn run(
     db_path: PathBuf,
     drive_id: i64,
     tx: &UnboundedSender<AppEvent>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let progress = |files: usize, done: usize, total: usize, current: &str| {
         let _ = tx.send(AppEvent::ScanProgress {
             files,
@@ -71,12 +73,27 @@ async fn run(
         .map(|f| (f.id, f.name.clone()))
         .collect();
     let total = top_dirs.len();
+    let mut failed = Vec::new();
     for (i, (id, name)) in top_dirs.iter().enumerate() {
         progress(files.len(), i, total, name);
-        list_all(client, drive_id, *id, Depth::Unlimited, &mut files, |n| {
-            progress(n, i, total, name)
-        })
-        .await?;
+        // On liste dans un tampon pour ne rien garder d'un dossier à moitié lu.
+        let mut dir_files = Vec::new();
+        let res = list_all(
+            client,
+            drive_id,
+            *id,
+            Depth::Unlimited,
+            &mut dir_files,
+            |n| progress(files.len() + n, i, total, name),
+        )
+        .await;
+        match res {
+            Ok(()) => files.extend(dir_files),
+            Err(e) => failed.push(format!("/{name} ({e:#})")),
+        }
+    }
+    if total > 0 && failed.len() == total {
+        anyhow::bail!("aucun dossier n'a pu être scanné : {}", failed.join(", "));
     }
     progress(files.len(), total, total, "enregistrement…");
 
@@ -90,5 +107,5 @@ async fn run(
         db.replace_tree(drive_id, &files, now)
     })
     .await??;
-    Ok(())
+    Ok(failed)
 }

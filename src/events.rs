@@ -10,7 +10,8 @@ pub enum AppEvent {
         dirs_total: usize,
         current: String,
     },
-    ScanDone(Result<(), String>),
+    /// `Ok` porte la liste des dossiers qui n'ont pas pu être scannés.
+    ScanDone(Result<Vec<String>, String>),
     Versions {
         file_id: i64,
         result: Result<Vec<Version>, String>,

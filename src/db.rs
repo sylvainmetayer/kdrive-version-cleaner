@@ -432,8 +432,14 @@ impl Db {
         Ok(())
     }
 
-    /// Versions en cache, `None` si elles n'ont jamais été chargées.
-    pub fn cached_versions(&self, drive_id: i64, file_id: i64) -> Result<Option<Vec<Version>>> {
+    /// Versions en cache, `None` si elles n'ont jamais été chargées ou l'ont été
+    /// avant `fetched_after`.
+    pub fn cached_versions(
+        &self,
+        drive_id: i64,
+        file_id: i64,
+        fetched_after: i64,
+    ) -> Result<Option<Vec<Version>>> {
         let fetched: Option<i64> = self
             .conn
             .query_row(
@@ -442,7 +448,7 @@ impl Db {
                 |r| r.get(0),
             )
             .optional()?;
-        if fetched.is_none() {
+        if fetched.is_none_or(|ts| ts < fetched_after) {
             return Ok(None);
         }
         let mut stmt = self.conn.prepare(
@@ -458,6 +464,28 @@ impl Db {
             })
         })?;
         Ok(Some(rows.collect::<rusqlite::Result<_>>()?))
+    }
+
+    /// Aligne le compte de versions d'un fichier sur une liste fraîchement chargée,
+    /// le scan ayant pu en voir moins (versions ajoutées depuis).
+    pub fn sync_version_count(
+        &self,
+        drive_id: i64,
+        file_id: i64,
+        versions: &[Version],
+    ) -> Result<()> {
+        let newest = versions.iter().map(|v| v.created_at).max();
+        let old_size: i64 = versions
+            .iter()
+            .filter(|v| Some(v.created_at) != newest)
+            .map(|v| v.size)
+            .sum();
+        self.conn.execute(
+            "UPDATE files SET versions_size = MAX(versions_size, ?4), nb_versions = ?3
+             WHERE drive_id = ?1 AND id = ?2 AND nb_versions < ?3",
+            params![drive_id, file_id, versions.len() as i64, old_size],
+        )?;
+        Ok(())
     }
 
     /// Met à jour le cache après la suppression d'une version.
@@ -675,9 +703,38 @@ mod tests {
     }
 
     #[test]
+    fn version_cache_expiry_and_count_sync() {
+        let mut db = sample();
+        // c.txt : le scan n'a vu qu'une version.
+        let vs = vec![
+            Version {
+                id: 1,
+                size: 4,
+                created_at: 1,
+                keep_forever: false,
+            },
+            Version {
+                id: 2,
+                size: 10,
+                created_at: 2,
+                keep_forever: false,
+            },
+        ];
+        db.save_versions(7, 22, &vs, 100).unwrap();
+        assert!(db.cached_versions(7, 22, 100).unwrap().is_some());
+        assert!(db.cached_versions(7, 22, 101).unwrap().is_none());
+        db.sync_version_count(7, 22, &vs).unwrap();
+        let e = db.entry(7, 22).unwrap().unwrap();
+        assert_eq!((e.nb_versions, e.versions_size), (2, 4));
+        // Une liste plus courte ne fait pas baisser le compte.
+        db.sync_version_count(7, 22, &vs[..1]).unwrap();
+        assert_eq!(db.entry(7, 22).unwrap().unwrap().nb_versions, 2);
+    }
+
+    #[test]
     fn version_cache_and_removal() {
         let mut db = sample();
-        assert!(db.cached_versions(7, 20).unwrap().is_none());
+        assert!(db.cached_versions(7, 20, 0).unwrap().is_none());
         let vs = vec![
             Version {
                 id: 1,
@@ -693,13 +750,13 @@ mod tests {
             },
         ];
         db.save_versions(7, 20, &vs, 5).unwrap();
-        assert_eq!(db.cached_versions(7, 20).unwrap().unwrap()[0].id, 2);
+        assert_eq!(db.cached_versions(7, 20, 0).unwrap().unwrap()[0].id, 2);
         db.remove_version(7, 20, 1, 100).unwrap();
         db.recompute_aggregates(7).unwrap();
         let e = db.entry(7, 20).unwrap().unwrap();
         assert_eq!((e.nb_versions, e.versions_size), (2, 200));
         assert_eq!(db.entry(7, 10).unwrap().unwrap().versions_size, 270);
         db.forget_versions(7, 20).unwrap();
-        assert!(db.cached_versions(7, 20).unwrap().is_none());
+        assert!(db.cached_versions(7, 20, 0).unwrap().is_none());
     }
 }

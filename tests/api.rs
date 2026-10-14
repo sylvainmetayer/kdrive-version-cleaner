@@ -163,3 +163,34 @@ async fn delete_is_not_replayed_after_server_error() {
         .to_string();
     assert!(err.contains("502"), "{err}");
 }
+
+#[tokio::test]
+async fn inconsistent_pagination_is_an_error() {
+    let server = MockServer::start().await;
+    // has_more sans curseur
+    Mock::given(method("GET"))
+        .and(path("/3/drive/7/files/10/files"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "success", "data": [], "cursor": null, "has_more": true
+        })))
+        .mount(&server)
+        .await;
+    // curseur répété
+    Mock::given(method("GET"))
+        .and(path("/3/drive/7/files/2/versions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "success", "data": [{"id": 1}], "cursor": "same", "has_more": true
+        })))
+        .mount(&server)
+        .await;
+
+    let c = client(&server).await;
+    let err = c
+        .list_files(7, 10, Depth::Unlimited, None)
+        .await
+        .err()
+        .unwrap();
+    assert!(err.to_string().contains("sans curseur"), "{err}");
+    let err = c.list_versions(7, 2).await.unwrap_err();
+    assert!(err.to_string().contains("curseur répété"), "{err}");
+}
