@@ -23,24 +23,39 @@ pub const ROOT_DIR_ID: i64 = 1;
 
 /// Espace les requêtes d'au moins `interval`.
 struct RateLimiter {
-    next: Mutex<Instant>,
+    state: Mutex<LimiterState>,
     interval: Duration,
+}
+
+struct LimiterState {
+    /// Prochain créneau libre.
+    next: Instant,
+    /// Aucune requête avant cet instant (fixé par un 429).
+    blocked_until: Instant,
 }
 
 impl RateLimiter {
     async fn acquire(&self) {
-        let mut next = self.next.lock().await;
-        let now = Instant::now();
-        let at = (*next).max(now);
-        *next = at + self.interval;
-        drop(next);
-        sleep_until(at).await;
+        loop {
+            let at = {
+                let mut st = self.state.lock().await;
+                let at = st.next.max(st.blocked_until).max(Instant::now());
+                st.next = at + self.interval;
+                at
+            };
+            sleep_until(at).await;
+            // Un 429 reçu pendant l'attente repousse aussi les créneaux déjà réservés.
+            if self.state.lock().await.blocked_until <= Instant::now() {
+                return;
+            }
+        }
     }
 
     /// Repousse toutes les requêtes (y compris celles des autres tâches) d'au moins `wait`.
     async fn defer(&self, wait: Duration) {
-        let mut next = self.next.lock().await;
-        *next = (*next).max(Instant::now() + wait);
+        let mut st = self.state.lock().await;
+        st.blocked_until = st.blocked_until.max(Instant::now() + wait);
+        st.next = st.next.max(st.blocked_until);
     }
 }
 
@@ -79,7 +94,10 @@ impl Client {
             base: base.trim_end_matches('/').to_string(),
             token,
             limiter: Arc::new(RateLimiter {
-                next: Mutex::new(Instant::now()),
+                state: Mutex::new(LimiterState {
+                    next: Instant::now(),
+                    blocked_until: Instant::now(),
+                }),
                 interval: min_interval,
             }),
         })
@@ -310,5 +328,36 @@ fn truncate(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
         Some((i, _)) => &s[..i],
         None => s,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn defer_also_delays_already_reserved_slots() {
+        let limiter = Arc::new(RateLimiter {
+            state: Mutex::new(LimiterState {
+                next: Instant::now(),
+                blocked_until: Instant::now(),
+            }),
+            interval: Duration::from_millis(50),
+        });
+        let start = Instant::now();
+        limiter.acquire().await;
+        // Créneau réservé pour t+50 ms, puis un 429 bloque tout jusqu'à t+300 ms.
+        let waiting = tokio::spawn({
+            let l = limiter.clone();
+            async move { l.acquire().await }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        limiter.defer(Duration::from_millis(300)).await;
+        waiting.await.unwrap();
+        assert!(
+            start.elapsed() >= Duration::from_millis(300),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }

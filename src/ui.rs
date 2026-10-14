@@ -306,8 +306,8 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), text_area);
     if let Some(w) = warning {
         let text = format!(
-            "⚠ Dernier scan partiel : ces dossiers n'ont pas pu être relus et affichent \
-             le contenu du scan précédent : {w}. Appuyez sur r pour réessayer."
+            "⚠ Dernier scan partiel : ces dossiers n'ont pas pu être relus : {w}. \
+             Appuyez sur r pour réessayer."
         );
         f.render_widget(
             Paragraph::new(text)

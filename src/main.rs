@@ -55,16 +55,32 @@ async fn main() -> Result<()> {
     } else {
         args.accounts.clone()
     };
+    // Un compte découvert automatiquement peut n'avoir aucun kDrive accessible :
+    // on l'ignore, sauf s'il a été demandé explicitement.
+    let explicit = !args.accounts.is_empty();
     let mut drives = Vec::new();
+    let mut errors = Vec::new();
     for account in accounts {
-        for d in client.list_drives(account).await? {
-            if !drives.iter().any(|x: &kdvc::api::Drive| x.id == d.id) {
-                drives.push(d);
+        match client.list_drives(account).await {
+            Ok(list) => {
+                for d in list {
+                    if !drives.iter().any(|x: &kdvc::api::Drive| x.id == d.id) {
+                        drives.push(d);
+                    }
+                }
             }
+            Err(e) if explicit => return Err(e.context(format!("compte {account}"))),
+            Err(e) => errors.push(format!("compte {account} : {e:#}")),
         }
     }
     if drives.is_empty() {
-        bail!("aucun kDrive accessible avec ce token");
+        if errors.is_empty() {
+            bail!("aucun kDrive accessible avec ce token");
+        }
+        bail!("aucun kDrive accessible : {}", errors.join(" ; "));
+    }
+    for e in &errors {
+        eprintln!("avertissement : {e}");
     }
     db.upsert_drives(&drives)?;
 

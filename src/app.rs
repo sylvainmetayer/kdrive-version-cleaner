@@ -472,7 +472,7 @@ impl App {
                     Ok(failed) => {
                         self.status = match self.refresh() {
                             Ok(()) if !failed.is_empty() => format!(
-                                "Scan partiel : {} dossier(s) non rescanné(s), ancien contenu conservé : {}",
+                                "Scan partiel : {} dossier(s) non rescanné(s) : {}",
                                 failed.len(),
                                 failed.join(", ")
                             ),

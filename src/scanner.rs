@@ -165,20 +165,20 @@ async fn run(
         .await;
 
     let mut failed = Vec::new();
-    let mut failed_ids = Vec::new();
     for (id, name, res) in results {
         match res {
             Ok(dir_files) => files.extend(dir_files),
-            Err(e) => {
-                failed.push(format!("/{name} ({e:#})"));
-                failed_ids.push(id);
-            }
+            Err(e) => failed.push((id, format!("/{name}"), format!("{e:#}"))),
         }
     }
     // L'ordre d'arrivée dépend du parallélisme : on le rend stable.
-    failed.sort();
+    failed.sort_by(|a, b| a.1.cmp(&b.1));
     if total > 0 && failed.len() == total {
-        anyhow::bail!("aucun dossier n'a pu être scanné : {}", failed.join(", "));
+        let list: Vec<_> = failed
+            .iter()
+            .map(|(_, name, e)| format!("{name} ({e})"))
+            .collect();
+        anyhow::bail!("aucun dossier n'a pu être scanné : {}", list.join(", "));
     }
     let _ = tx.send(AppEvent::ScanProgress {
         files: files.len(),
@@ -192,11 +192,26 @@ async fn run(
     files.dedup_by_key(|f| f.id);
 
     let now = crate::now();
-    let warning = (!failed.is_empty()).then(|| failed.join(", "));
-    tokio::task::spawn_blocking(move || -> Result<()> {
+    let failed_ids: Vec<i64> = failed.iter().map(|f| f.0).collect();
+    tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
         let mut db = Db::open(&db_path)?;
-        db.replace_tree(drive_id, &files, &failed_ids, warning.as_deref(), now)
+        let placeholder = (!failed.is_empty()).then_some("scan partiel");
+        let kept = db.replace_tree(drive_id, &files, &failed_ids, placeholder, now)?;
+        // Un dossier jamais scanné n'a aucun ancien contenu à conserver : il apparaît vide.
+        let report: Vec<String> = failed
+            .iter()
+            .map(|(id, name, e)| {
+                if kept.contains(id) {
+                    format!("{name} ({e} ; ancien contenu conservé)")
+                } else {
+                    format!("{name} ({e} ; aucun contenu en cache, affiché vide)")
+                }
+            })
+            .collect();
+        if !report.is_empty() {
+            db.set_scan_warning(drive_id, &report.join(", "))?;
+        }
+        Ok(report)
     })
-    .await??;
-    Ok(failed)
+    .await?
 }

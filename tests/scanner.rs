@@ -120,11 +120,29 @@ async fn full_then_partial_scan() {
     let failed = run_scan(&server, &db_path).await.unwrap();
     assert_eq!(failed.len(), 1);
     assert!(failed[0].starts_with("/Photos"), "{failed:?}");
+    assert!(failed[0].contains("ancien contenu conservé"), "{failed:?}");
     assert!(
         db.entry(DRIVE, 40).unwrap().is_some(),
         "contenu de /Photos conservé"
     );
-    assert!(db.drive(DRIVE).unwrap().unwrap().scan_warning.is_some());
+    assert_eq!(
+        db.drive(DRIVE).unwrap().unwrap().scan_warning.as_deref(),
+        Some(failed[0].as_str())
+    );
+
+    // Base vierge : /Photos en échec n'a rien en cache, le message ne prétend pas le contraire.
+    let fresh = dir.path().join("fresh.db");
+    Db::open(&fresh)
+        .unwrap()
+        .upsert_drives(&[kdvc::api::Drive {
+            id: DRIVE,
+            name: "d".into(),
+            size: None,
+            used_size: None,
+        }])
+        .unwrap();
+    let failed = run_scan(&server, &fresh).await.unwrap();
+    assert!(failed[0].contains("aucun contenu en cache"), "{failed:?}");
 }
 
 #[tokio::test]

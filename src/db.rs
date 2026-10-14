@@ -185,7 +185,8 @@ impl Db {
     /// Remplace l'arborescence d'un drive par le résultat d'un scan.
     ///
     /// Le contenu en cache des dossiers de `keep_dirs` (dossiers que le scan n'a pas
-    /// pu lister) est conservé tel quel, et `warning` est mémorisé avec le drive.
+    /// pu lister) est conservé, sous leur chemin actuel, et `warning` est mémorisé
+    /// avec le drive. Renvoie les dossiers dont un contenu a effectivement été conservé.
     pub fn replace_tree(
         &mut self,
         drive_id: i64,
@@ -193,26 +194,36 @@ impl Db {
         keep_dirs: &[i64],
         warning: Option<&str>,
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<Vec<i64>> {
+        let paths = build_paths(files);
+        let mut kept_dirs = Vec::new();
         let tx = self.conn.transaction()?;
         tx.execute_batch(
             "DROP TABLE IF EXISTS temp.kept;
              CREATE TEMP TABLE kept AS SELECT * FROM files WHERE 0;",
         )?;
         for dir in keep_dirs {
-            let path: Option<String> = tx
+            let old: Option<String> = tx
                 .query_row(
                     "SELECT path FROM files WHERE drive_id = ?1 AND id = ?2",
                     params![drive_id, dir],
                     |r| r.get(0),
                 )
                 .optional()?;
-            if let Some(path) = path {
-                tx.execute(
-                    "INSERT INTO kept SELECT * FROM files
-                     WHERE drive_id = ?1 AND substr(path, 1, length(?2)) = ?2",
-                    params![drive_id, format!("{path}/")],
-                )?;
+            let Some(old) = old else { continue };
+            // Le dossier a pu être renommé depuis le scan précédent : son contenu
+            // conservé reprend le nouveau chemin, sinon recherche et nettoyage par
+            // préfixe viseraient les mauvais fichiers.
+            let new = paths.get(dir).cloned().unwrap_or_else(|| old.clone());
+            let n = tx.execute(
+                "INSERT INTO kept SELECT drive_id, id, parent_id, name,
+                    ?3 || substr(path, length(?2)), is_dir, size, nb_versions,
+                    versions_size, versioned_files, last_modified_at
+                 FROM files WHERE drive_id = ?1 AND substr(path, 1, length(?2)) = ?2",
+                params![drive_id, format!("{old}/"), new],
+            )?;
+            if n > 0 {
+                kept_dirs.push(*dir);
             }
         }
         tx.execute("DELETE FROM files WHERE drive_id = ?1", [drive_id])?;
@@ -225,7 +236,6 @@ impl Db {
             [drive_id],
         )?;
         {
-            let paths = build_paths(files);
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO files(drive_id, id, parent_id, name, path, is_dir, size,
                     nb_versions, versions_size, versioned_files, last_modified_at)
@@ -263,7 +273,17 @@ impl Db {
             params![drive_id, now, warning],
         )?;
         tx.commit()?;
-        self.recompute_aggregates(drive_id)
+        self.recompute_aggregates(drive_id)?;
+        Ok(kept_dirs)
+    }
+
+    /// Remplace l'avertissement du dernier scan.
+    pub fn set_scan_warning(&self, drive_id: i64, warning: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE drives SET scan_warning = ?2 WHERE id = ?1",
+            params![drive_id, warning],
+        )?;
+        Ok(())
     }
 
     /// Recalcule les totaux des dossiers à partir des fichiers.
@@ -815,6 +835,39 @@ mod tests {
         db.replace_tree(7, &files, &[], None, 3).unwrap();
         assert!(db.entry(7, 21).unwrap().is_none());
         assert!(db.drive(7).unwrap().unwrap().scan_warning.is_none());
+    }
+
+    #[test]
+    fn partial_scan_follows_renamed_failed_dir() {
+        let mut db = sample();
+        // /Docs (10) renommé en /Archive, un nouveau /Docs (12) créé ; /Archive échoue.
+        let files = vec![
+            file(10, 1, "Archive", true, 0, None),
+            file(12, 1, "Docs", true, 0, None),
+        ];
+        let kept = db
+            .replace_tree(7, &files, &[10, 12], Some("/Archive (403)"), 2)
+            .unwrap();
+        // /Docs (12) n'avait rien en cache : il n'est pas annoncé comme conservé.
+        assert_eq!(kept, vec![10]);
+        assert_eq!(db.entry(7, 20).unwrap().unwrap().path, "/Archive/a.docx");
+        assert_eq!(
+            db.entry(7, 21).unwrap().unwrap().path,
+            "/Archive/Sub_dir/b.xlsx"
+        );
+        let archive = db.entry(7, 10).unwrap().unwrap();
+        let docs = db.entry(7, 12).unwrap().unwrap();
+        let ids = |e| {
+            db.versioned_descendants(7, &e)
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(docs), Vec::<i64>::new());
+        let mut a = ids(archive);
+        a.sort();
+        assert_eq!(a, vec![20, 21]);
     }
 
     #[test]

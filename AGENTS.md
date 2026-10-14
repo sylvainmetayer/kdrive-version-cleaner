@@ -61,7 +61,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 ## API Infomaniak : à savoir
 
 - Référence : https://developer.infomaniak.com/docs/api. La spec OpenAPI est à https://developer.infomaniak.com/openapi.json : interrogez-la avec `jq` plutôt que la page HTML.
-- **Limite de 60 requêtes/min.** Le `RateLimiter` partagé espace les requêtes d'1 s. Un 429 repousse le limiter pour toutes les tâches, et l'attente `Retry-After` est plafonnée à 120 s.
+- **Limite de 60 requêtes/min.** Le `RateLimiter` partagé espace les requêtes d'1 s. Un 429 repousse le limiter pour toutes les tâches, y compris les requêtes dont le créneau était déjà réservé, et l'attente `Retry-After` est plafonnée à 120 s.
 - `GET /2/drive` exige `account_id` (sinon 422 `validation_failed`). On liste donc les comptes (`/1/accounts`, scope `accounts`), ou on prend ceux passés par `--account`.
 - `depth=unlimited` est **refusé sur la racine** (id 1). Le scan liste donc la racine, puis les dossiers de premier niveau en profondeur, `SCAN_CONCURRENCY` (4) à la fois. Le serveur peut mettre plusieurs secondes à répondre pour chaque page, et le rate limiter partagé garantit qu'on reste sous la limite.
 - Il existe deux paginations :
@@ -73,7 +73,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 
 ## Cache SQLite
 
-- `replace_tree` remplace l'arborescence d'un drive après un scan. Le contenu des dossiers dont le scan a échoué est conservé, et l'avertissement est stocké dans `drives.scan_warning`.
+- `replace_tree` remplace l'arborescence d'un drive après un scan. Le contenu des dossiers dont le scan a échoué est conservé, **sous le chemin actuel du dossier** (il a pu être renommé), et l'avertissement est stocké dans `drives.scan_warning`. La fonction renvoie les dossiers dont un contenu a réellement été conservé.
 - Les agrégats des dossiers (`size`, `versions_size`, `versioned_files`) sont recalculés par `recompute_aggregates`. `sync_version_count` les propage aussi aux dossiers parents.
 - Les versions en cache expirent au bout d'1 h (`VERSIONS_TTL_SECS`).
 - Les filtres de chemin utilisent une comparaison de préfixe exacte (`substr(path, 1, length(?)) = ?`), et **jamais `LIKE`**, qui ignore la casse.
