@@ -12,6 +12,7 @@
 [![Security](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer-github_kdrive-version-cleaner&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer-github_kdrive-version-cleaner)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sylvainmetayer-github/kdrive-version-cleaner/badge)](https://scorecard.dev/viewer/?uri=github.com/sylvainmetayer-github/kdrive-version-cleaner)
 
+[![Licence MIT](https://img.shields.io/github/license/sylvainmetayer-github/kdrive-version-cleaner)](LICENSE)
 [![MSRV](https://img.shields.io/badge/rustc-1.88+-orange?logo=rust)](https://blog.rust-lang.org/)
 [![Built With Ratatui](https://img.shields.io/badge/Built_With_Ratatui-000?logo=ratatui&logoColor=fff)](https://ratatui.rs/)
 [![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/sylvainmetayer-github/kdrive-version-cleaner/network/updates)
@@ -70,7 +71,7 @@ L'outil ne supprime jamais la version courante, ni une version marquée « conse
 
 - **Cache** : `~/.cache/kdvc/cache.db` (SQLite). Il contient l'arborescence, les versions déjà chargées et le journal. `r` relance un scan.
 - **Limite de l'API** : 60 requêtes par minute. Le client attend au moins 1 s entre deux requêtes et réessaie après une erreur 429 ou 5xx.
-- **Scan** : la racine est d'abord listée seule, car l'API refuse `depth=unlimited` sur la racine. Chaque dossier de premier niveau est ensuite listé en profondeur, par pages de 1000 éléments.
+- **Scan** : la racine est d'abord listée seule, car l'API refuse `depth=unlimited` sur la racine. Chaque dossier de premier niveau est ensuite listé en profondeur, par pages de 1000 éléments. Si un dossier ne peut pas être listé, il garde son contenu du scan précédent et un avertissement reste affiché dans l'onglet Stats jusqu'au prochain scan complet.
 - **Chargement des versions** : il se fait à la demande, quand on ouvre un fichier ou qu'on calcule un aperçu. Cela coûte une requête par fichier, et une ETA est affichée.
 - **Version courante** : la plus récente de la liste `/versions` est toujours traitée comme courante et protégée. Si l'API n'inclut pas la version courante dans cette liste, on conserve au pire une ancienne version de trop.
 
@@ -97,3 +98,7 @@ Pour publier une release : passer `version` à X.Y.Z dans `Cargo.toml`, commiter
 Secrets à configurer : `CODECOV_TOKEN` et `SONAR_TOKEN`. Sans eux, les étapes correspondantes sont simplement ignorées.
 
 `KDVC_API_URL` permet de faire pointer l'outil vers un serveur de test plutôt que vers `https://api.infomaniak.com`.
+
+## Licence
+
+[MIT](LICENSE)
