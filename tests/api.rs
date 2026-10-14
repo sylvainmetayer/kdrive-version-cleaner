@@ -194,3 +194,49 @@ async fn inconsistent_pagination_is_an_error() {
     let err = c.list_versions(7, 2).await.unwrap_err();
     assert!(err.to_string().contains("curseur répété"), "{err}");
 }
+
+#[tokio::test]
+async fn versions_page_pagination_with_has_more() {
+    let server = MockServer::start().await;
+    for page in 1..=2 {
+        Mock::given(method("GET"))
+            .and(path("/3/drive/7/files/2/versions"))
+            .and(query_param("page", page.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "success",
+                "data": [{"id": page, "size": 10, "created_at": page * 100}],
+                "page": page, "pages": 2, "has_more": page < 2, "cursor": null
+            })))
+            .mount(&server)
+            .await;
+    }
+    let versions = client(&server).await.list_versions(7, 2).await.unwrap();
+    assert_eq!(
+        versions.iter().map(|v| v.id).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+#[tokio::test]
+async fn versions_cursor_cycle_is_an_error() {
+    let server = MockServer::start().await;
+    for (from, to) in [("a", "b"), ("b", "a")] {
+        Mock::given(method("GET"))
+            .and(path("/3/drive/7/files/2/versions"))
+            .and(query_param("cursor", from))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "success", "data": [{"id": 1}], "cursor": to, "has_more": true
+            })))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/3/drive/7/files/2/versions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "success", "data": [{"id": 1}], "cursor": "a", "has_more": true
+        })))
+        .mount(&server)
+        .await;
+    let err = client(&server).await.list_versions(7, 2).await.unwrap_err();
+    assert!(err.to_string().contains("curseur répété"), "{err}");
+}

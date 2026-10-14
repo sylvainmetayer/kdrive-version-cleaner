@@ -1,5 +1,6 @@
 pub mod models;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -217,9 +218,6 @@ impl Client {
                 "/3/drive/{drive_id}/files/{dir_id}/files : has_more sans curseur, liste incomplète"
             );
         }
-        if has_more && env.cursor.as_deref() == cursor {
-            bail!("/3/drive/{drive_id}/files/{dir_id}/files : curseur répété, pagination bloquée");
-        }
         Ok(CursorPage {
             items: env.data.unwrap_or_default(),
             has_more,
@@ -233,6 +231,7 @@ impl Client {
         let mut versions = Vec::new();
         let mut page = 1;
         let mut cursor: Option<String> = None;
+        let mut seen_cursors = HashSet::new();
         loop {
             let mut query = vec![
                 ("per_page", "100".to_string()),
@@ -254,7 +253,8 @@ impl Client {
             let path = format!("/3/drive/{drive_id}/files/{file_id}/versions");
             if env.has_more == Some(true) {
                 match env.cursor {
-                    Some(c) if Some(&c) == cursor.as_ref() => {
+                    // Un curseur déjà vu (même plus tôt qu'à la page précédente) bouclerait.
+                    Some(c) if !seen_cursors.insert(c.clone()) => {
                         bail!("{path} : curseur répété, pagination bloquée")
                     }
                     Some(c) => {

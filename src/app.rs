@@ -396,6 +396,7 @@ impl App {
                 }
             }
             AppEvent::Versions { file_id, result } => {
+                let mut cache_changed = false;
                 if let Overlay::Versions(view) = &mut self.overlay
                     && view.entry.id == file_id
                 {
@@ -403,13 +404,24 @@ impl App {
                         Ok(mut versions) => {
                             rules::sort_newest_first(&mut versions);
                             view.current_id = rules::current_version_id(&versions);
-                            view.entry.nb_versions =
-                                view.entry.nb_versions.max(versions.len() as i64);
+                            // Le chargement a pu réaligner le compte et le poids du fichier.
+                            let drive_id = self.drive.as_ref().map(|d| d.id);
+                            // Une erreur de lecture ne doit pas empêcher l'affichage des versions.
+                            if let Some(id) = drive_id
+                                && let Ok(Some(entry)) = self.db.entry(id, file_id)
+                            {
+                                cache_changed = entry.nb_versions != view.entry.nb_versions
+                                    || entry.versions_size != view.entry.versions_size;
+                                view.entry = entry;
+                            }
                             clamp(&mut view.state, versions.len());
                             view.versions = Some(versions);
                         }
                         Err(e) => view.error = Some(e),
                     }
+                }
+                if cache_changed {
+                    self.refresh()?;
                 }
             }
             AppEvent::PrepareProgress { done, total } => {
@@ -851,7 +863,13 @@ impl App {
             ),
             Tab::Search => (
                 format!("les {} résultats de recherche", self.search_results.len()),
-                self.search_results.clone(),
+                // « Versions min. » peut être inférieur à 2 : on évite une requête
+                // par fichier sans ancienne version connue.
+                self.search_results
+                    .iter()
+                    .filter(|e| e.nb_versions > 1)
+                    .cloned()
+                    .collect(),
             ),
             _ => return Ok(()),
         };
@@ -882,13 +900,9 @@ impl App {
         if self.scan_blocks_cleanup() {
             return;
         }
-        // Pour un fichier seul, on laisse l'aperçu charger ses versions : le compte
-        // du scan peut être périmé. Pour une liste, on évite une requête par fichier.
-        let targets: Vec<Entry> = if targets.len() == 1 {
-            targets.into_iter().filter(|e| !e.is_dir).collect()
-        } else {
-            targets.into_iter().filter(|e| e.nb_versions > 1).collect()
-        };
+        // Les listes arrivent déjà filtrées sur le compte du scan ; un fichier choisi
+        // seul ne l'est pas : l'aperçu chargera ses versions, ce compte pouvant être périmé.
+        let targets: Vec<Entry> = targets.into_iter().filter(|e| !e.is_dir).collect();
         if targets.is_empty() {
             self.overlay = Overlay::None;
             self.status = "Aucune ancienne version dans la sélection.".into();

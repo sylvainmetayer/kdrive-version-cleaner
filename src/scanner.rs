@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -27,6 +28,7 @@ async fn list_all(
     mut on_page: impl FnMut(usize),
 ) -> Result<()> {
     let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
     loop {
         let page = client
             .list_files(drive_id, dir_id, depth, cursor.as_deref())
@@ -35,6 +37,12 @@ async fn list_all(
         on_page(files.len());
         if !page.has_more {
             return Ok(());
+        }
+        // Un curseur déjà vu ferait boucler le scan indéfiniment.
+        if let Some(c) = &page.cursor
+            && !seen_cursors.insert(c.clone())
+        {
+            anyhow::bail!("dossier {dir_id} : curseur répété, pagination bloquée");
         }
         cursor = page.cursor;
     }

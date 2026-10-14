@@ -467,24 +467,55 @@ impl Db {
     }
 
     /// Aligne le compte de versions d'un fichier sur une liste fraîchement chargée,
-    /// le scan ayant pu en voir moins (versions ajoutées depuis).
+    /// le scan ayant pu en voir moins (versions ajoutées depuis). Les totaux des
+    /// dossiers parents sont ajustés d'autant.
     pub fn sync_version_count(
-        &self,
+        &mut self,
         drive_id: i64,
         file_id: i64,
         versions: &[Version],
     ) -> Result<()> {
-        let newest = versions.iter().map(|v| v.created_at).max();
+        let current = crate::rules::current_version_id(versions);
         let old_size: i64 = versions
             .iter()
-            .filter(|v| Some(v.created_at) != newest)
+            .filter(|v| Some(v.id) != current)
             .map(|v| v.size)
             .sum();
-        self.conn.execute(
-            "UPDATE files SET versions_size = MAX(versions_size, ?4), nb_versions = ?3
-             WHERE drive_id = ?1 AND id = ?2 AND nb_versions < ?3",
-            params![drive_id, file_id, versions.len() as i64, old_size],
+        let count = versions.len() as i64;
+        let tx = self.conn.transaction()?;
+        let before: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT nb_versions, versions_size FROM files
+                 WHERE drive_id = ?1 AND id = ?2 AND NOT is_dir",
+                params![drive_id, file_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((nb, vsize)) = before.filter(|(nb, _)| *nb < count) else {
+            return Ok(());
+        };
+        let new_vsize = vsize.max(old_size);
+        tx.execute(
+            "UPDATE files SET nb_versions = ?3, versions_size = ?4, versioned_files = (?3 > 1)
+             WHERE drive_id = ?1 AND id = ?2",
+            params![drive_id, file_id, count, new_vsize],
         )?;
+        let delta_size = new_vsize - vsize;
+        let delta_versioned = i64::from(nb <= 1 && count > 1);
+        if delta_size != 0 || delta_versioned != 0 {
+            // UNION (et non UNION ALL) arrête la remontée en cas de cycle.
+            tx.execute(
+                "WITH RECURSIVE anc(id) AS (
+                    SELECT parent_id FROM files WHERE drive_id = ?1 AND id = ?2
+                    UNION
+                    SELECT f.parent_id FROM files f JOIN anc ON f.drive_id = ?1 AND f.id = anc.id)
+                 UPDATE files SET versions_size = versions_size + ?3,
+                    versioned_files = versioned_files + ?4
+                 WHERE drive_id = ?1 AND is_dir AND id IN (SELECT id FROM anc)",
+                params![drive_id, file_id, delta_size, delta_versioned],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -725,10 +756,27 @@ mod tests {
         assert!(db.cached_versions(7, 22, 101).unwrap().is_none());
         db.sync_version_count(7, 22, &vs).unwrap();
         let e = db.entry(7, 22).unwrap().unwrap();
-        assert_eq!((e.nb_versions, e.versions_size), (2, 4));
+        assert_eq!(
+            (e.nb_versions, e.versions_size, e.versioned_files),
+            (2, 4, 1)
+        );
         // Une liste plus courte ne fait pas baisser le compte.
         db.sync_version_count(7, 22, &vs[..1]).unwrap();
         assert_eq!(db.entry(7, 22).unwrap().unwrap().nb_versions, 2);
+        // b.xlsx (Docs/Sub_dir) : 3 versions au lieu de 2, les parents suivent.
+        let vs: Vec<Version> = (1..=3)
+            .map(|i| Version {
+                id: i,
+                size: 50,
+                created_at: i,
+                keep_forever: false,
+            })
+            .collect();
+        db.sync_version_count(7, 21, &vs).unwrap();
+        assert_eq!(db.entry(7, 21).unwrap().unwrap().versions_size, 100);
+        assert_eq!(db.entry(7, 11).unwrap().unwrap().versions_size, 100);
+        let docs = db.entry(7, 10).unwrap().unwrap();
+        assert_eq!((docs.versions_size, docs.versioned_files), (400, 2));
     }
 
     #[test]
