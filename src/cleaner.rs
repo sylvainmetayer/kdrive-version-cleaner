@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::api::Client;
 use crate::db::{Db, Entry, LogEntry};
 use crate::events::AppEvent;
+use crate::now;
 use crate::rules::{self, Rule};
 
 #[derive(Debug, Clone)]
@@ -40,10 +41,6 @@ pub struct ExecSummary {
 }
 
 pub type Cancel = Arc<AtomicBool>;
-
-pub fn now() -> i64 {
-    chrono::Utc::now().timestamp()
-}
 
 /// Versions d'un fichier, depuis le cache ou l'API.
 pub async fn load_versions(
@@ -169,6 +166,11 @@ pub async fn execute(
             }
             Some(e) => {
                 summary.failed += 1;
+                // L'état réel de la version est inconnu (déjà supprimée lors d'un essai
+                // précédent, modifiée entre-temps…) : on recharge la liste au prochain usage.
+                if let Err(e) = db.forget_versions(drive_id, item.file_id) {
+                    summary.errors.push(format!("cache : {e:#}"));
+                }
                 summary
                     .errors
                     .push(format!("{} (version {}) : {e}", item.path, item.version_id));

@@ -114,3 +114,32 @@ async fn api_error_is_reported() {
     assert!(err.contains("forbidden"), "{err}");
     c.delete_version(7, 2, 8).await.unwrap();
 }
+
+#[tokio::test]
+async fn versions_cursor_pagination() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/3/drive/7/files/2/versions"))
+        .and(query_param("cursor", "next"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "success",
+            "data": [{"id": 2, "size": 10, "created_at": 200, "keep_forever": false}],
+            "cursor": null, "has_more": false
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/3/drive/7/files/2/versions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "success",
+            "data": [{"id": 1, "size": 10, "created_at": 100, "keep_forever": false}],
+            "cursor": "next", "has_more": true
+        })))
+        .mount(&server)
+        .await;
+    let versions = client(&server).await.list_versions(7, 2).await.unwrap();
+    assert_eq!(
+        versions.iter().map(|v| v.id).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}

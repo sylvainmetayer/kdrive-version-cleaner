@@ -627,7 +627,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
                             "[ ]"
                         };
                         let note = if is_current {
-                            "courante"
+                            "protégée (plus récente)"
                         } else if v.keep_forever {
                             "conservée pour toujours"
                         } else {

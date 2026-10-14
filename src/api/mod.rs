@@ -195,22 +195,36 @@ impl Client {
     }
 
     pub async fn list_versions(&self, drive_id: i64, file_id: i64) -> Result<Vec<Version>> {
+        // Accepte les deux paginations de l'API : par page (`pages`) et par curseur
+        // (`cursor` / `has_more`, propre à la v3). Ignorer l'une tronquerait la liste.
         let mut versions = Vec::new();
         let mut page = 1;
+        let mut cursor: Option<String> = None;
         loop {
+            let mut query = vec![
+                ("per_page", "100".to_string()),
+                ("limit", "100".into()),
+                ("total", "true".into()),
+            ];
+            match &cursor {
+                Some(c) => query.push(("cursor", c.clone())),
+                None => query.push(("page", page.to_string())),
+            }
             let env: Envelope<Vec<Version>> = self
                 .request(
                     Method::GET,
                     &format!("/3/drive/{drive_id}/files/{file_id}/versions"),
-                    &[
-                        ("page", page.to_string()),
-                        ("per_page", "100".into()),
-                        ("total", "true".into()),
-                    ],
+                    &query,
                 )
                 .await?;
             versions.extend(env.data.unwrap_or_default());
-            if page >= env.pages.unwrap_or(1) {
+            if env.has_more == Some(true)
+                && let Some(c) = env.cursor
+            {
+                cursor = Some(c);
+                continue;
+            }
+            if cursor.is_some() || page >= env.pages.unwrap_or(1) {
                 break;
             }
             page += 1;

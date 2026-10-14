@@ -481,6 +481,19 @@ impl Db {
         Ok(())
     }
 
+    /// Oublie les versions en cache d'un fichier : elles seront rechargées depuis l'API.
+    pub fn forget_versions(&self, drive_id: i64, file_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM versions WHERE drive_id = ?1 AND file_id = ?2",
+            params![drive_id, file_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM versions_fetched WHERE drive_id = ?1 AND file_id = ?2",
+            params![drive_id, file_id],
+        )?;
+        Ok(())
+    }
+
     // ---- journal ----
 
     pub fn log_deletion(&self, e: &LogEntry) -> Result<()> {
@@ -686,5 +699,7 @@ mod tests {
         let e = db.entry(7, 20).unwrap().unwrap();
         assert_eq!((e.nb_versions, e.versions_size), (2, 200));
         assert_eq!(db.entry(7, 10).unwrap().unwrap().versions_size, 270);
+        db.forget_versions(7, 20).unwrap();
+        assert!(db.cached_versions(7, 20).unwrap().is_none());
     }
 }

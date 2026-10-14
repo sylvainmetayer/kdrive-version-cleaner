@@ -10,9 +10,10 @@ use ratatui::widgets::TableState;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{Client, Drive, ROOT_DIR_ID, Version};
-use crate::cleaner::{self, Cancel, ExecSummary, Plan, now};
+use crate::cleaner::{self, Cancel, ExecSummary, Plan};
 use crate::db::{Db, DriveInfo, Entry, LogEntry, SearchFilter, Stats};
 use crate::events::AppEvent;
+use crate::now;
 use crate::rules::{self, Rule};
 
 /// Au-delà, on suggère un rescan.
@@ -76,11 +77,11 @@ pub struct RulePicker {
 }
 
 impl RulePicker {
-    /// `None` si le paramètre de la règle est vide ou invalide : on ne retombe
-    /// jamais sur la valeur la plus destructrice.
+    /// `None` si le paramètre de la règle est vide ou invalide (dont « garder 0 ») :
+    /// on ne retombe jamais sur la valeur la plus destructrice.
     pub fn rule(&self, index: usize) -> Option<Rule> {
         Some(match index {
-            0 => Rule::KeepLast(self.keep_n.parse().ok()?),
+            0 => Rule::KeepLast(self.keep_n.parse().ok().filter(|n| *n >= 1)?),
             1 => Rule::OlderThan {
                 days: self.days.parse().ok()?,
             },
@@ -130,6 +131,9 @@ pub struct SearchForm {
     pub fields: [String; 4],
     pub focus: usize,
     pub editing: bool,
+    /// Filtre de la dernière recherche lancée, réutilisé au rafraîchissement
+    /// (les champs peuvent être en cours de modification).
+    pub applied: SearchFilter,
 }
 
 impl SearchForm {
@@ -251,6 +255,7 @@ impl App {
                 fields: [String::new(), String::new(), String::new(), "2".into()],
                 focus: 0,
                 editing: false,
+                applied: SearchFilter::default(),
             },
             search_results: Vec::new(),
             search_state: TableState::default(),
@@ -315,7 +320,7 @@ impl App {
         self.top = self.db.top(id, LIST_LIMIT)?;
         clamp(&mut self.top_state, self.top.len());
         if !self.search_results.is_empty() {
-            self.search_results = self.db.search(id, &self.search.filter(), LIST_LIMIT)?;
+            self.search_results = self.db.search(id, &self.search.applied, LIST_LIMIT)?;
             clamp(&mut self.search_state, self.search_results.len());
         }
         self.log = self.db.log(id)?;
@@ -562,7 +567,8 @@ impl App {
             KeyCode::Enter => {
                 f.editing = false;
                 if let Some(id) = self.drive_id() {
-                    self.search_results = self.db.search(id, &self.search.filter(), LIST_LIMIT)?;
+                    self.search.applied = self.search.filter();
+                    self.search_results = self.db.search(id, &self.search.applied, LIST_LIMIT)?;
                     self.search_state = TableState::default();
                     clamp(&mut self.search_state, self.search_results.len());
                     self.status = format!("{} résultat(s).", self.search_results.len());
@@ -655,9 +661,11 @@ impl App {
                     } else {
                         step
                     };
+                    // On garde au moins la version courante.
+                    let min = if p.selected == 0 { 1 } else { 0 };
                     if let Some(param) = p.param() {
                         let v = param.parse::<i64>().unwrap_or(0) + delta;
-                        *param = v.clamp(0, 99_999).to_string();
+                        *param = v.clamp(min, 99_999).to_string();
                     }
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -678,6 +686,7 @@ impl App {
                 }
                 KeyCode::Enter => {
                     let Some(rule) = p.rule(p.selected) else {
+                        self.status = "Paramètre invalide : saisissez un nombre (au moins 1 version à garder).".into();
                         return Ok(());
                     };
                     let label = std::mem::take(&mut p.label);
@@ -844,9 +853,16 @@ impl App {
         }
     }
 
-    fn open_rule_picker(&mut self, label: String, targets: Vec<Entry>) {
+    /// Un scan remplace le cache : on ne prépare aucun nettoyage pendant ce temps.
+    fn scan_blocks_cleanup(&mut self) -> bool {
         if self.scan.is_some() {
             self.status = "Attendez la fin du scan avant de nettoyer.".into();
+        }
+        self.scan.is_some()
+    }
+
+    fn open_rule_picker(&mut self, label: String, targets: Vec<Entry>) {
+        if self.scan_blocks_cleanup() {
             return;
         }
         let targets: Vec<Entry> = targets.into_iter().filter(|e| e.nb_versions > 1).collect();
@@ -870,8 +886,7 @@ impl App {
             return;
         };
         // La sélection manuelle passe directement ici, sans le sélecteur de règle.
-        if self.scan.is_some() {
-            self.status = "Attendez la fin du scan avant de nettoyer.".into();
+        if self.scan_blocks_cleanup() {
             return;
         }
         let cancel: Cancel = Arc::new(AtomicBool::new(false));
@@ -953,5 +968,31 @@ impl App {
             Ok(()) => format!("Journal exporté dans {name}"),
             Err(e) => format!("Export impossible : {e:#}"),
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picker(keep_n: &str, days: &str) -> RulePicker {
+        RulePicker {
+            label: String::new(),
+            targets: Vec::new(),
+            selected: 0,
+            keep_n: keep_n.into(),
+            days: days.into(),
+            typed: false,
+        }
+    }
+
+    #[test]
+    fn rule_picker_rejects_empty_or_zero_keep() {
+        assert_eq!(picker("3", "90").rule(0), Some(Rule::KeepLast(3)));
+        assert_eq!(picker("", "90").rule(0), None);
+        assert_eq!(picker("0", "90").rule(0), None);
+        assert_eq!(picker("1", "").rule(1), None);
+        assert_eq!(picker("1", "0").rule(1), Some(Rule::OlderThan { days: 0 }));
+        assert_eq!(picker("", "").rule(2), Some(Rule::AllButCurrent));
     }
 }
