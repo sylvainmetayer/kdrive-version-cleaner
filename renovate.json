@@ -1,0 +1,30 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommitsDisabled"
+  ],
+  "timezone": "Europe/Paris",
+  "schedule": ["before 6am on monday"],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "description": "Mises à jour mineures et correctives groupées",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "dépendances (mineures)"
+    },
+    {
+      "description": "La version de dtolnay/rust-toolchain encode la toolchain (stable, MSRV 1.88) : ne pas la changer",
+      "matchPackageNames": ["dtolnay/rust-toolchain"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false
+    }
+  ]
+}

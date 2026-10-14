@@ -15,7 +15,7 @@
 [![Licence MIT](https://img.shields.io/github/license/sylvainmetayer/kdrive-version-cleaner)](LICENSE)
 [![MSRV](https://img.shields.io/badge/rustc-1.88+-orange?logo=rust)](https://blog.rust-lang.org/)
 [![Built With Ratatui](https://img.shields.io/badge/Built_With_Ratatui-000?logo=ratatui&logoColor=fff)](https://ratatui.rs/)
-[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/sylvainmetayer/kdrive-version-cleaner/network/updates)
+[![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://github.com/sylvainmetayer/kdrive-version-cleaner/issues?q=is%3Apr+author%3Aapp%2Frenovate)
 
 Une petite application en terminal (TUI, en Rust avec ratatui) pour voir quelle place prennent les anciennes versions des fichiers d'un kDrive Infomaniak, puis les supprimer sans risque.
 
@@ -96,6 +96,10 @@ cargo deny check   # failles, licences et sources des dépendances
 Pour publier une release : passer `version` à X.Y.Z dans `Cargo.toml`, commiter, puis `git tag vX.Y.Z && git push --tags`.
 
 Secrets à configurer : `CODECOV_TOKEN` et `SONAR_TOKEN`. Sans eux, les étapes correspondantes sont simplement ignorées.
+
+Les dépendances (Cargo et actions GitHub) sont mises à jour par [Renovate](renovate.json), chaque lundi. Les mises à jour mineures sont groupées et les actions sont épinglées par digest.
+
+Les consignes pour les agents de code sont dans [AGENTS.md](AGENTS.md).
 
 `KDVC_API_URL` permet de faire pointer l'outil vers un serveur de test plutôt que vers `https://api.infomaniak.com`.
 
