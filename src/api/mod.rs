@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep, sleep_until};
 
 use models::Envelope;
-pub use models::{Drive, RemoteFile, Version};
+pub use models::{Account, Drive, RemoteFile, Version};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.infomaniak.com";
 /// L'API Infomaniak limite à 60 requêtes par minute.
@@ -162,24 +162,37 @@ impl Client {
         }
     }
 
-    pub async fn list_drives(&self) -> Result<Vec<Drive>> {
-        let mut drives = Vec::new();
+    /// Comptes (organisations) de l'utilisateur. Demande le scope `accounts`.
+    pub async fn list_accounts(&self) -> Result<Vec<Account>> {
+        self.paged("/1/accounts", &[]).await
+    }
+
+    /// Drives accessibles d'un compte (`account_id` est obligatoire pour l'API).
+    pub async fn list_drives(&self, account_id: i64) -> Result<Vec<Drive>> {
+        self.paged("/2/drive", &[("account_id", account_id.to_string())])
+            .await
+    }
+
+    /// Toutes les pages d'une liste paginée par `page` / `pages`.
+    async fn paged<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        params: &[(&str, String)],
+    ) -> Result<Vec<T>> {
+        let mut items = Vec::new();
         let mut page = 1;
         loop {
-            let env: Envelope<Vec<Drive>> = self
-                .request(
-                    Method::GET,
-                    "/2/drive",
-                    &[("page", page.to_string()), ("per_page", "100".into())],
-                )
-                .await?;
-            drives.extend(env.data.unwrap_or_default());
+            let mut query = params.to_vec();
+            query.push(("page", page.to_string()));
+            query.push(("per_page", "100".into()));
+            let env: Envelope<Vec<T>> = self.request(Method::GET, path, &query).await?;
+            items.extend(env.data.unwrap_or_default());
             if page >= env.pages.unwrap_or(1) {
                 break;
             }
             page += 1;
         }
-        Ok(drives)
+        Ok(items)
     }
 
     /// Une page d'éléments d'un dossier. `depth=unlimited` n'est pas accepté sur la racine.

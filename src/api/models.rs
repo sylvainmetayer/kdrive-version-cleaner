@@ -19,6 +19,14 @@ pub struct ApiError {
     pub description: Option<String>,
 }
 
+/// Compte Infomaniak (organisation) auquel les drives sont rattachés.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Account {
+    pub id: i64,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Drive {
     pub id: i64,

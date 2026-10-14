@@ -61,19 +61,21 @@ cargo install --git https://github.com/sylvainmetayer/kdrive-version-cleaner
 
 ## Token API
 
-1. Créez un token sur https://manager.infomaniak.com/v3/ng/profile/user/token/list, avec le scope **drive**.
+1. Créez un token sur https://manager.infomaniak.com/v3/ng/profile/user/token/list, avec le scope **drive**. Ajoutez le scope **accounts** si vous voulez que kdvc trouve vos comptes tout seul.
 2. Mettez-le à disposition de l'outil, au choix :
    - dans la variable d'environnement : `export KDRIVE_TOKEN=...`
    - dans un fichier :
      ```sh
      mkdir -p ~/.config/kdvc && echo "$TOKEN" > ~/.config/kdvc/token && chmod 600 ~/.config/kdvc/token
      ```
+3. Sans le scope `accounts`, il faut indiquer le compte Infomaniak dont les drives seront listés. Son identifiant est le nombre qui apparaît dans l'URL du manager, `manager.infomaniak.com/v3/<id>/…`. Passez-le avec `--account <id>`, ou exportez `KDVC_ACCOUNT_ID=<id>`. Pour plusieurs comptes, séparez les identifiants par des virgules.
 
 ## Utilisation
 
 ```sh
 kdvc                    # choisit le drive (s'il y en a plusieurs), scanne au premier lancement
 kdvc --drive "Mon kDrive" --rescan
+kdvc --account 123456   # token sans scope « accounts »
 ```
 
 | Onglet | Contenu |

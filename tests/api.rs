@@ -58,6 +58,7 @@ async fn retries_after_429() {
         .await;
     Mock::given(method("GET"))
         .and(path("/2/drive"))
+        .and(query_param("account_id", "42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "result": "success", "data": [{"id": 1, "name": "Mon kDrive"}],
             "page": 1, "pages": 1
@@ -65,8 +66,30 @@ async fn retries_after_429() {
         .mount(&server)
         .await;
 
-    let drives = client(&server).await.list_drives().await.unwrap();
+    let drives = client(&server).await.list_drives(42).await.unwrap();
     assert_eq!(drives[0].name, "Mon kDrive");
+}
+
+#[tokio::test]
+async fn accounts_page_pagination() {
+    let server = MockServer::start().await;
+    for page in 1..=2 {
+        Mock::given(method("GET"))
+            .and(path("/1/accounts"))
+            .and(query_param("page", page.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "success",
+                "data": [{"id": page * 10, "name": format!("Compte {page}")}],
+                "page": page, "pages": 2
+            })))
+            .mount(&server)
+            .await;
+    }
+    let accounts = client(&server).await.list_accounts().await.unwrap();
+    assert_eq!(
+        accounts.iter().map(|a| a.id).collect::<Vec<_>>(),
+        vec![10, 20]
+    );
 }
 
 #[tokio::test]

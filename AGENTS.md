@@ -22,6 +22,7 @@ cargo run -- --drive <id|nom> --rescan
 
 Variables d'environnement :
 - `KDRIVE_TOKEN` : token API Infomaniak (scope drive). Sinon, il est lu dans `~/.config/kdvc/token`.
+- `KDVC_ACCOUNT_ID` (ou `--account`) : comptes dont les drives sont listés. Sinon, ils sont lus via `/1/accounts`, ce qui demande le scope `accounts`.
 - `KDVC_API_URL` : URL de base de l'API, pour pointer vers un serveur de test.
 - `XDG_CACHE_HOME` : permet d'isoler le cache SQLite (`<cache>/kdvc/cache.db`) pendant les essais.
 
@@ -61,6 +62,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 
 - Référence : https://developer.infomaniak.com/docs/api. La spec OpenAPI est à https://developer.infomaniak.com/openapi.json : interrogez-la avec `jq` plutôt que la page HTML.
 - **Limite de 60 requêtes/min.** Le `RateLimiter` partagé espace les requêtes d'1 s. Un 429 repousse le limiter pour toutes les tâches, et l'attente `Retry-After` est plafonnée à 120 s.
+- `GET /2/drive` exige `account_id` (sinon 422 `validation_failed`). On liste donc les comptes (`/1/accounts`, scope `accounts`), ou on prend ceux passés par `--account`.
 - `depth=unlimited` est **refusé sur la racine** (id 1). Le scan liste donc la racine, puis chaque dossier de premier niveau en profondeur.
 - Il existe deux paginations :
   - par **curseur** (`cursor` / `has_more`, sur les listings v3) ;

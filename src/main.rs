@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use futures::StreamExt;
 use ratatui::crossterm::event::EventStream;
@@ -17,6 +17,11 @@ struct Args {
     /// Drive à ouvrir (identifiant ou nom).
     #[arg(long)]
     drive: Option<String>,
+    /// Compte Infomaniak dont lister les drives (identifiant, visible dans l'URL du
+    /// manager : manager.infomaniak.com/v3/<id>/…). Répétable. Sans cette option,
+    /// les comptes sont lus via l'API (scope `accounts` requis).
+    #[arg(long = "account", env = "KDVC_ACCOUNT_ID", value_delimiter = ',')]
+    accounts: Vec<i64>,
     /// Forcer un nouveau scan au démarrage.
     #[arg(long)]
     rescan: bool,
@@ -35,7 +40,29 @@ async fn main() -> Result<()> {
     let db = Db::open(&db_path)?;
 
     eprintln!("Connexion à l'API Infomaniak…");
-    let drives = client.list_drives().await?;
+    let accounts = if args.accounts.is_empty() {
+        client
+            .list_accounts()
+            .await
+            .context(
+                "impossible de lister les comptes Infomaniak (le token a-t-il le scope « accounts » ?). \
+                 Indiquez le compte avec --account <id> ou KDVC_ACCOUNT_ID : c'est le nombre \
+                 dans l'URL du manager (manager.infomaniak.com/v3/<id>/…)",
+            )?
+            .into_iter()
+            .map(|a| a.id)
+            .collect()
+    } else {
+        args.accounts.clone()
+    };
+    let mut drives = Vec::new();
+    for account in accounts {
+        for d in client.list_drives(account).await? {
+            if !drives.iter().any(|x: &kdvc::api::Drive| x.id == d.id) {
+                drives.push(d);
+            }
+        }
+    }
     if drives.is_empty() {
         bail!("aucun kDrive accessible avec ce token");
     }
