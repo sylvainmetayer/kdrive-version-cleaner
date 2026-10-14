@@ -21,9 +21,37 @@ Une petite application en terminal (TUI, en Rust avec ratatui) pour voir quelle 
 
 ## Installation
 
-Binaires prêts à l'emploi (Linux x86_64/ARM64/musl, macOS Intel/Apple Silicon, Windows) sur la [page des releases](https://github.com/sylvainmetayer/kdrive-version-cleaner/releases/latest), avec leur somme SHA-256 et une attestation de provenance (`gh attestation verify <archive> -R sylvainmetayer/kdrive-version-cleaner`).
+### Avec [mise](https://mise.jdx.dev) (recommandé)
 
-Depuis les sources (Rust ≥ 1.88) :
+Le backend `github:` de mise télécharge le binaire de la release qui correspond à ta plateforme :
+
+```sh
+mise use -g github:sylvainmetayer/kdrive-version-cleaner
+kdvc --version
+```
+
+Pour figer une version ou forcer le binaire Linux statique (musl, sans dépendance à la glibc), ajoute ceci dans `~/.config/mise/config.toml` :
+
+```toml
+[tools]
+"github:sylvainmetayer/kdrive-version-cleaner" = { version = "0.1.0", asset_pattern = "*linux-musl*" }
+```
+
+`mise upgrade` installe ensuite les nouvelles releases, et `mise uninstall github:sylvainmetayer/kdrive-version-cleaner` désinstalle l'outil.
+
+### Binaires
+
+Les archives (Linux x86_64/ARM64/musl, macOS Intel/Apple Silicon, Windows) sont sur la [page des releases](https://github.com/sylvainmetayer/kdrive-version-cleaner/releases/latest). Chacune est fournie avec sa somme SHA-256 et une attestation de provenance :
+
+```sh
+gh release download -R sylvainmetayer/kdrive-version-cleaner -p '*x86_64-unknown-linux-musl.tar.gz'
+gh attestation verify kdvc-*.tar.gz --owner sylvainmetayer
+tar xzf kdvc-*.tar.gz && install kdvc-*/kdvc ~/.local/bin/
+```
+
+### Depuis les sources
+
+Il faut Rust ≥ 1.88 :
 
 ```sh
 cargo install --git https://github.com/sylvainmetayer/kdrive-version-cleaner
