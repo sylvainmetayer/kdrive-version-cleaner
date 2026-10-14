@@ -2,6 +2,13 @@
 name = "kdvc"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+publish = false
+description = "TUI pour visualiser et nettoyer les anciennes versions des fichiers d'un kDrive Infomaniak"
+repository = "https://github.com/sylvainmetayer-github/kdrive-version-cleaner"
+readme = "README.md"
+keywords = ["kdrive", "infomaniak", "tui", "ratatui", "cleanup"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -20,3 +27,8 @@ tokio = { version = "1.53.3", features = ["full"] }
 
 [dev-dependencies]
 wiremock = "0.6.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
