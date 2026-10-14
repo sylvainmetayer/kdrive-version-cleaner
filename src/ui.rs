@@ -172,11 +172,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             scan.dirs_done as f64 / scan.dirs_total as f64
         };
         let elapsed = scan.started.elapsed().as_secs();
-        let rate = if elapsed > 0 {
-            format!(" ({}/s)", fmt_count((scan.files as u64 / elapsed) as i64))
-        } else {
-            String::new()
-        };
+        let rate = (scan.files as u64)
+            .checked_div(elapsed)
+            .map(|r| format!(" ({}/s)", fmt_count(r as i64)))
+            .unwrap_or_default();
         let dirs = if scan.dirs_total == 0 {
             "lecture de la racine".to_string()
         } else {
