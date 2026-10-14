@@ -39,6 +39,8 @@ Pour figer une version ou forcer le binaire Linux statique (musl, sans dépendan
 
 `mise upgrade` installe ensuite les nouvelles releases, et `mise uninstall github:sylvainmetayer/kdrive-version-cleaner` désinstalle l'outil.
 
+> Si `minimum_release_age` est configuré dans mise, une release trop récente est masquée (« no versions found … matching minimum_release_age »). Dans ce cas, indique la version explicitement (`mise use -g github:sylvainmetayer/kdrive-version-cleaner@0.1.0`), ou attends que le délai soit écoulé.
+
 ### Binaires
 
 Les archives (Linux x86_64/ARM64/musl, macOS Intel/Apple Silicon, Windows) sont sur la [page des releases](https://github.com/sylvainmetayer/kdrive-version-cleaner/releases/latest). Chacune est fournie avec sa somme SHA-256 et une attestation de provenance :
