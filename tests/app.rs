@@ -271,11 +271,15 @@ async fn drive_picker_and_scan_events() {
             current: "Docs".into(),
         })
         .unwrap();
-    assert!(h.screen().contains("Scan : 1"));
+    let screen = h.screen();
+    assert!(screen.contains("dossiers 1/3"), "{screen}");
+    assert!(screen.contains("Docs"), "{screen}");
+    assert!(h.app.loading());
     h.app
         .on_app_event(AppEvent::ScanDone(Ok(vec!["/Photos (403)".into()])))
         .unwrap();
     assert!(h.app.scan.is_none());
+    assert!(!h.app.loading());
     assert!(h.app.status.contains("Scan partiel"), "{}", h.app.status);
     h.app
         .on_app_event(AppEvent::ScanDone(Err("réseau".into())))

@@ -52,6 +52,7 @@ pub struct ScanState {
     pub dirs_done: usize,
     pub dirs_total: usize,
     pub current: String,
+    pub started: Instant,
 }
 
 pub struct VersionsView {
@@ -419,6 +420,7 @@ impl App {
             dirs_done: 0,
             dirs_total: 0,
             current: String::new(),
+            started: Instant::now(),
         });
         self.status.clear();
         tokio::spawn(crate::scanner::scan(
@@ -437,6 +439,14 @@ impl App {
         )
     }
 
+    /// Une opération longue est en cours : l'écran est redessiné plus souvent
+    /// pour animer l'indicateur de chargement.
+    pub fn loading(&self) -> bool {
+        self.busy()
+            || self.scan.is_some()
+            || matches!(&self.overlay, Overlay::Versions(v) if v.versions.is_none() && v.error.is_none())
+    }
+
     // ---------- événements de fond ----------
 
     pub fn on_app_event(&mut self, ev: AppEvent) -> Result<()> {
@@ -447,11 +457,13 @@ impl App {
                 dirs_total,
                 current,
             } => {
+                let started = self.scan.as_ref().map_or_else(Instant::now, |s| s.started);
                 self.scan = Some(ScanState {
                     files,
                     dirs_done,
                     dirs_total,
                     current,
+                    started,
                 });
             }
             AppEvent::ScanDone(res) => {

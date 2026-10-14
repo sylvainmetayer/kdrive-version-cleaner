@@ -147,3 +147,34 @@ async fn scan_fails_when_root_or_all_dirs_fail() {
     let err = run_scan(&server, &db_path).await.unwrap_err();
     assert!(err.contains("aucun dossier"), "{err}");
 }
+
+#[tokio::test]
+async fn top_level_dirs_are_listed_concurrently() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    let n = kdvc::scanner::SCAN_CONCURRENCY as i64;
+    let server = MockServer::start().await;
+    let dirs: Vec<_> = (0..n)
+        .map(|i| json!({"id": 100 + i, "name": format!("d{i}"), "type": "dir", "parent_id": 1}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path(format!("/3/drive/{DRIVE}/files/1/files")))
+        .respond_with(listing(json!(dirs), None))
+        .mount(&server)
+        .await;
+    for i in 0..n {
+        Mock::given(method("GET"))
+            .and(path(format!("/3/drive/{DRIVE}/files/{}/files", 100 + i)))
+            .respond_with(listing(json!([]), None).set_delay(std::time::Duration::from_millis(400)))
+            .mount(&server)
+            .await;
+    }
+    let started = std::time::Instant::now();
+    assert_eq!(run_scan(&server, &db_path).await, Ok(vec![]));
+    // En séquentiel, il faudrait n × 400 ms.
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(400 * n as u64 - 200),
+        "{:?}",
+        started.elapsed()
+    );
+}

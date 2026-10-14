@@ -38,7 +38,7 @@ Ne jamais lancer de suppression contre un vrai drive pendant un développement. 
 | `events.rs` | `AppEvent` : messages des tâches tokio vers la boucle UI |
 | `api/` | Client HTTP Infomaniak : rate limiter partagé, retries, pagination. Modèles serde dans `models.rs` |
 | `db.rs` | Cache SQLite : arborescence, versions, journal des suppressions, agrégats par dossier |
-| `scanner.rs` | Scan complet du drive (tâche tokio) |
+| `scanner.rs` | Scan complet du drive (tâche tokio, dossiers de premier niveau en parallèle) |
 | `rules.rs` | Sélection des versions à supprimer. **Fonctions pures**, testées |
 | `cleaner.rs` | Aperçu (`prepare`) et exécution (`execute`) d'un nettoyage, chargement des versions avec TTL |
 | `config.rs` | Chemins (via `directories`) et lecture du token |
@@ -63,7 +63,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 - Référence : https://developer.infomaniak.com/docs/api. La spec OpenAPI est à https://developer.infomaniak.com/openapi.json : interrogez-la avec `jq` plutôt que la page HTML.
 - **Limite de 60 requêtes/min.** Le `RateLimiter` partagé espace les requêtes d'1 s. Un 429 repousse le limiter pour toutes les tâches, et l'attente `Retry-After` est plafonnée à 120 s.
 - `GET /2/drive` exige `account_id` (sinon 422 `validation_failed`). On liste donc les comptes (`/1/accounts`, scope `accounts`), ou on prend ceux passés par `--account`.
-- `depth=unlimited` est **refusé sur la racine** (id 1). Le scan liste donc la racine, puis chaque dossier de premier niveau en profondeur.
+- `depth=unlimited` est **refusé sur la racine** (id 1). Le scan liste donc la racine, puis les dossiers de premier niveau en profondeur, `SCAN_CONCURRENCY` (4) à la fois. Le serveur peut mettre plusieurs secondes à répondre pour chaque page, et le rate limiter partagé garantit qu'on reste sous la limite.
 - Il existe deux paginations :
   - par **curseur** (`cursor` / `has_more`, sur les listings v3) ;
   - par **page** (`page` / `pages`).
@@ -100,5 +100,6 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 ## Conventions
 
 - Suivez le style existant : modules courts, `anyhow::Result`, erreurs contextualisées (`with_context`), pas d'`unwrap()` hors tests.
+- Toute opération longue doit afficher un indicateur animé (`ui::spinner`) et être couverte par `App::loading()`, qui accélère le redessin.
 - Une erreur dans un gestionnaire de touche ou d'événement s'affiche dans la barre d'état (`app.status`). Elle ne doit pas fermer la TUI.
 - Commits en français, au présent, avec un titre court et une liste à puces si nécessaire.

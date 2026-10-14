@@ -69,6 +69,13 @@ fn fmt_duration(secs: u64) -> String {
     }
 }
 
+/// Image courante de l'indicateur de chargement (une toutes les 100 ms).
+fn spinner() -> char {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let ms = chrono::Utc::now().timestamp_millis().unsigned_abs();
+    FRAMES[(ms / 100 % FRAMES.len() as u64) as usize]
+}
+
 fn fmt_pct(ratio: f64) -> String {
     format!("{:.1} %", ratio * 100.0).replace('.', ",")
 }
@@ -164,11 +171,22 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         } else {
             scan.dirs_done as f64 / scan.dirs_total as f64
         };
+        let elapsed = scan.started.elapsed().as_secs();
+        let rate = if elapsed > 0 {
+            format!(" ({}/s)", fmt_count((scan.files as u64 / elapsed) as i64))
+        } else {
+            String::new()
+        };
+        let dirs = if scan.dirs_total == 0 {
+            "lecture de la racine".to_string()
+        } else {
+            format!("dossiers {}/{}", scan.dirs_done, scan.dirs_total)
+        };
         let label = format!(
-            "Scan : {} éléments — dossier {}/{} {}",
+            "{} Scan · {} éléments{rate} · {dirs} · {} · {}",
+            spinner(),
             fmt_count(scan.files as i64),
-            scan.dirs_done,
-            scan.dirs_total,
+            fmt_duration(elapsed),
             scan.current
         );
         f.render_widget(
@@ -664,9 +682,10 @@ fn draw_versions(f: &mut Frame, view: &mut VersionsView, full_w: u16, full_h: u1
                 .wrap(Wrap { trim: true }),
             table_area,
         ),
-        (None, None) => {
-            f.render_widget(Paragraph::new("Chargement des versions…").dim(), table_area)
-        }
+        (None, None) => f.render_widget(
+            Paragraph::new(format!("{} Chargement des versions…", spinner())).dim(),
+            table_area,
+        ),
         (Some(versions), None) => {
             let rows = versions.iter().map(|v| {
                 let is_current = Some(v.id) == view.current_id;
@@ -798,7 +817,10 @@ fn draw_preparing(f: &mut Frame, label: &str, done: usize, total: usize, started
     f.render_widget(
         Gauge::default()
             .ratio(ratio)
-            .label(format!("Chargement des versions {done}/{total}{eta}"))
+            .label(format!(
+                "{} Chargement des versions {done}/{total}{eta}",
+                spinner()
+            ))
             .gauge_style(Style::new().fg(ACCENT).bg(Color::Black)),
         l2,
     );
@@ -910,7 +932,8 @@ fn draw_executing(f: &mut Frame, done: usize, total: usize, freed: i64, failed: 
         Gauge::default()
             .ratio(ratio)
             .label(format!(
-                "{done}/{total} · {} libérés · {failed} échec(s) · reste ~{}",
+                "{} {done}/{total} · {} libérés · {failed} échec(s) · reste ~{}",
+                spinner(),
                 fmt_size(freed),
                 fmt_duration((total - done) as u64)
             ))

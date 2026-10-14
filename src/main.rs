@@ -111,8 +111,9 @@ async fn run(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<kdvc::events::AppEvent>,
 ) -> Result<()> {
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(500));
     while !app.quit {
+        // Redessin rapide pendant un chargement pour animer le spinner.
+        let tick = Duration::from_millis(if app.loading() { 100 } else { 500 });
         terminal.draw(|f| ui::draw(f, app))?;
         let handled = tokio::select! {
             ev = events.next() => match ev {
@@ -121,7 +122,7 @@ async fn run(
                 None => break,
             },
             Some(msg) = rx.recv() => app.on_app_event(msg),
-            _ = tick.tick() => Ok(()),
+            _ = tokio::time::sleep(tick) => Ok(()),
         };
         // Une erreur de lecture du cache ne doit pas fermer l'application en pleine session.
         if let Err(e) = handled {
