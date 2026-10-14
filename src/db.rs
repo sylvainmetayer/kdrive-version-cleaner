@@ -34,6 +34,8 @@ pub struct DriveInfo {
     pub size: i64,
     pub used_size: i64,
     pub scanned_at: Option<i64>,
+    /// Dossiers non rescannés lors du dernier scan (contenu conservé de l'avant-dernier).
+    pub scan_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -103,6 +105,19 @@ impl Db {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        Self::create_schema(&conn)?;
+        let has_warning: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('drives') WHERE name = 'scan_warning'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_warning {
+            conn.execute("ALTER TABLE drives ADD COLUMN scan_warning TEXT", [])?;
+        }
+        Ok(Self { conn })
+    }
+
+    fn create_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS drives(
                 id INTEGER PRIMARY KEY, name TEXT NOT NULL,
@@ -129,7 +144,7 @@ impl Db {
                 version_id INTEGER NOT NULL, version_created_at INTEGER NOT NULL,
                 size INTEGER NOT NULL, ok INTEGER NOT NULL, error TEXT);",
         )?;
-        Ok(Self { conn })
+        Ok(())
     }
 
     // ---- drives ----
@@ -149,7 +164,7 @@ impl Db {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, name, size, used_size, scanned_at FROM drives WHERE id = ?1",
+                "SELECT id, name, size, used_size, scanned_at, scan_warning FROM drives WHERE id = ?1",
                 [drive_id],
                 |r| {
                     Ok(DriveInfo {
@@ -158,6 +173,7 @@ impl Db {
                         size: r.get(2)?,
                         used_size: r.get(3)?,
                         scanned_at: r.get(4)?,
+                        scan_warning: r.get(5)?,
                     })
                 },
             )
@@ -167,12 +183,45 @@ impl Db {
     // ---- scan ----
 
     /// Remplace l'arborescence d'un drive par le résultat d'un scan.
-    pub fn replace_tree(&mut self, drive_id: i64, files: &[RemoteFile], now: i64) -> Result<()> {
+    ///
+    /// Le contenu en cache des dossiers de `keep_dirs` (dossiers que le scan n'a pas
+    /// pu lister) est conservé tel quel, et `warning` est mémorisé avec le drive.
+    pub fn replace_tree(
+        &mut self,
+        drive_id: i64,
+        files: &[RemoteFile],
+        keep_dirs: &[i64],
+        warning: Option<&str>,
+        now: i64,
+    ) -> Result<()> {
         let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS temp.kept;
+             CREATE TEMP TABLE kept AS SELECT * FROM files WHERE 0;",
+        )?;
+        for dir in keep_dirs {
+            let path: Option<String> = tx
+                .query_row(
+                    "SELECT path FROM files WHERE drive_id = ?1 AND id = ?2",
+                    params![drive_id, dir],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(path) = path {
+                tx.execute(
+                    "INSERT INTO kept SELECT * FROM files
+                     WHERE drive_id = ?1 AND substr(path, 1, length(?2)) = ?2",
+                    params![drive_id, format!("{path}/")],
+                )?;
+            }
+        }
         tx.execute("DELETE FROM files WHERE drive_id = ?1", [drive_id])?;
-        tx.execute("DELETE FROM versions WHERE drive_id = ?1", [drive_id])?;
         tx.execute(
-            "DELETE FROM versions_fetched WHERE drive_id = ?1",
+            "DELETE FROM versions WHERE drive_id = ?1 AND file_id NOT IN (SELECT id FROM kept)",
+            [drive_id],
+        )?;
+        tx.execute(
+            "DELETE FROM versions_fetched WHERE drive_id = ?1 AND file_id NOT IN (SELECT id FROM kept)",
             [drive_id],
         )?;
         {
@@ -208,9 +257,10 @@ impl Db {
                 ])?;
             }
         }
+        tx.execute_batch("INSERT OR IGNORE INTO files SELECT * FROM kept; DROP TABLE temp.kept;")?;
         tx.execute(
-            "UPDATE drives SET scanned_at = ?2 WHERE id = ?1",
-            params![drive_id, now],
+            "UPDATE drives SET scanned_at = ?2, scan_warning = ?3 WHERE id = ?1",
+            params![drive_id, now, warning],
         )?;
         tx.commit()?;
         self.recompute_aggregates(drive_id)
@@ -663,7 +713,7 @@ mod tests {
             file(21, 11, "b.xlsx", false, 50, Some((2, 120))),
             file(22, 1, "c.txt", false, 10, Some((1, 10))),
         ];
-        db.replace_tree(7, &files, 1).unwrap();
+        db.replace_tree(7, &files, &[], None, 1).unwrap();
         db
     }
 
@@ -731,6 +781,40 @@ mod tests {
             ..Default::default()
         };
         assert!(db.search(7, &f, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn partial_scan_keeps_failed_dirs() {
+        let mut db = sample();
+        db.save_versions(
+            7,
+            21,
+            &[Version {
+                id: 1,
+                size: 1,
+                created_at: 1,
+                keep_forever: false,
+            }],
+            5,
+        )
+        .unwrap();
+        // Rescan où /Docs (10) n'a pas pu être listé : seule la racine est revue.
+        let files = vec![
+            file(10, 1, "Docs", true, 0, None),
+            file(22, 1, "c.txt", false, 10, Some((1, 10))),
+        ];
+        db.replace_tree(7, &files, &[10], Some("/Docs (403)"), 2)
+            .unwrap();
+        // Contenu de /Docs conservé, agrégats recalculés, avertissement mémorisé.
+        assert!(db.entry(7, 21).unwrap().is_some());
+        assert_eq!(db.entry(7, 10).unwrap().unwrap().versions_size, 370);
+        assert!(db.cached_versions(7, 21, 0).unwrap().is_some());
+        let d = db.drive(7).unwrap().unwrap();
+        assert_eq!(d.scan_warning.as_deref(), Some("/Docs (403)"));
+        // Un scan complet efface l'avertissement et le contenu disparu.
+        db.replace_tree(7, &files, &[], None, 3).unwrap();
+        assert!(db.entry(7, 21).unwrap().is_none());
+        assert!(db.drive(7).unwrap().unwrap().scan_warning.is_none());
     }
 
     #[test]

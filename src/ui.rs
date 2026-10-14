@@ -136,6 +136,14 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Line::from(vec![
                 Span::styled(d.name.clone(), Style::new().fg(ACCENT).bold()),
                 Span::raw(format!("  scan : {scanned}")).dim(),
+                Span::styled(
+                    if d.scan_warning.is_some() {
+                        " (partiel)"
+                    } else {
+                        ""
+                    },
+                    Style::new().fg(Color::Yellow).bold(),
+                ),
             ])
         }
         None => Line::from("aucun drive").dim(),
@@ -217,7 +225,8 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
         s.files_size + s.versions_size
     };
 
-    let [text_area, _, g1, _, g2, _, g3] = Layout::vertical([
+    let warning = app.drive.as_ref().and_then(|d| d.scan_warning.clone());
+    let [text_area, _, g1, _, g2, _, g3, _, warn_area] = Layout::vertical([
         Constraint::Length(9),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -225,6 +234,8 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
     ])
     .areas(inner.inner(ratatui::layout::Margin::new(2, 1)));
 
@@ -272,6 +283,18 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
         .dim(),
     ];
     f.render_widget(Paragraph::new(lines), text_area);
+    if let Some(w) = warning {
+        let text = format!(
+            "⚠ Dernier scan partiel : ces dossiers n'ont pas pu être relus et affichent \
+             le contenu du scan précédent : {w}. Appuyez sur r pour réessayer."
+        );
+        f.render_widget(
+            Paragraph::new(text)
+                .fg(Color::Yellow)
+                .wrap(Wrap { trim: true }),
+            warn_area,
+        );
+    }
 
     let gauge = |label: String, ratio: f64, color: Color| {
         Gauge::default()

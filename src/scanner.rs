@@ -12,7 +12,7 @@ use crate::events::AppEvent;
 ///
 /// L'API refuse `depth=unlimited` sur la racine : on liste d'abord la racine,
 /// puis chaque dossier de premier niveau en profondeur illimitée.
-/// Un dossier en échec est signalé et laissé vide, sans bloquer le reste ;
+/// Un dossier en échec est signalé et garde son contenu du scan précédent ;
 /// si tous échouent, le cache n'est pas modifié.
 pub async fn scan(client: Client, db_path: PathBuf, drive_id: i64, tx: UnboundedSender<AppEvent>) {
     let result = run(&client, db_path, drive_id, &tx).await;
@@ -82,6 +82,7 @@ async fn run(
         .collect();
     let total = top_dirs.len();
     let mut failed = Vec::new();
+    let mut failed_ids = Vec::new();
     for (i, (id, name)) in top_dirs.iter().enumerate() {
         progress(files.len(), i, total, name);
         // On liste dans un tampon pour ne rien garder d'un dossier à moitié lu.
@@ -97,7 +98,10 @@ async fn run(
         .await;
         match res {
             Ok(()) => files.extend(dir_files),
-            Err(e) => failed.push(format!("/{name} ({e:#})")),
+            Err(e) => {
+                failed.push(format!("/{name} ({e:#})"));
+                failed_ids.push(*id);
+            }
         }
     }
     if total > 0 && failed.len() == total {
@@ -110,9 +114,10 @@ async fn run(
     files.dedup_by_key(|f| f.id);
 
     let now = crate::now();
+    let warning = (!failed.is_empty()).then(|| failed.join(", "));
     tokio::task::spawn_blocking(move || -> Result<()> {
         let mut db = Db::open(&db_path)?;
-        db.replace_tree(drive_id, &files, now)
+        db.replace_tree(drive_id, &files, &failed_ids, warning.as_deref(), now)
     })
     .await??;
     Ok(failed)
