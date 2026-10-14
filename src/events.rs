@@ -1,10 +1,9 @@
-use crate::api::{Drive, Version};
+use crate::api::Version;
 use crate::cleaner::{ExecSummary, Plan};
 
 /// Messages envoyés par les tâches de fond à la boucle de l'interface.
 #[derive(Debug)]
 pub enum AppEvent {
-    Drives(Result<Vec<Drive>, String>),
     ScanProgress {
         files: usize,
         dirs_done: usize,

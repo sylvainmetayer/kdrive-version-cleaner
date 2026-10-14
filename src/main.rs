@@ -66,7 +66,10 @@ async fn main() -> Result<()> {
     let mut app = App::new(client, db, db_path, tx, drives);
     match preselected {
         Some(id) => app.select_drive(id, args.rescan)?,
-        None => app.open_drive_picker(),
+        None => {
+            app.rescan_on_select = args.rescan;
+            app.open_drive_picker();
+        }
     }
 
     let mut terminal = ratatui::init();

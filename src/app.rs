@@ -10,7 +10,7 @@ use ratatui::widgets::TableState;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::{Client, Drive, ROOT_DIR_ID, Version};
-use crate::cleaner::{self, Cancel, ExecSummary, Plan};
+use crate::cleaner::{self, Cancel, ExecSummary, Plan, now};
 use crate::db::{Db, DriveInfo, Entry, LogEntry, SearchFilter, Stats};
 use crate::events::AppEvent;
 use crate::rules::{self, Rule};
@@ -76,14 +76,16 @@ pub struct RulePicker {
 }
 
 impl RulePicker {
-    pub fn rule(&self, index: usize) -> Rule {
-        match index {
-            0 => Rule::KeepLast(self.keep_n.parse().unwrap_or(1)),
+    /// `None` si le paramètre de la règle est vide ou invalide : on ne retombe
+    /// jamais sur la valeur la plus destructrice.
+    pub fn rule(&self, index: usize) -> Option<Rule> {
+        Some(match index {
+            0 => Rule::KeepLast(self.keep_n.parse().ok()?),
             1 => Rule::OlderThan {
-                days: self.days.parse().unwrap_or(0),
+                days: self.days.parse().ok()?,
             },
             _ => Rule::AllButCurrent,
-        }
+        })
     }
 
     fn param(&mut self) -> Option<&mut String> {
@@ -175,6 +177,8 @@ pub struct App {
     pub overlay: Overlay,
     pub status: String,
     pub cancel: Option<Cancel>,
+    /// `--rescan` demandé alors que le drive sera choisi dans le sélecteur.
+    pub rescan_on_select: bool,
     pub quit: bool,
 }
 
@@ -191,10 +195,6 @@ fn root_entry() -> Entry {
         versioned_files: 0,
         last_modified_at: 0,
     }
-}
-
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
 }
 
 /// Ajuste la sélection d'une table après rechargement de ses lignes.
@@ -260,6 +260,7 @@ impl App {
             overlay: Overlay::None,
             status: String::new(),
             cancel: None,
+            rescan_on_select: false,
             quit: false,
         }
     }
@@ -354,7 +355,6 @@ impl App {
 
     pub fn on_app_event(&mut self, ev: AppEvent) -> Result<()> {
         match ev {
-            AppEvent::Drives(_) => {}
             AppEvent::ScanProgress {
                 files,
                 dirs_done,
@@ -389,9 +389,7 @@ impl App {
                     match result {
                         Ok(mut versions) => {
                             rules::sort_newest_first(&mut versions);
-                            let in_list =
-                                rules::current_in_list(versions.len(), view.entry.nb_versions);
-                            view.current_id = rules::current_version_id(&versions, in_list);
+                            view.current_id = rules::current_version_id(&versions);
                             clamp(&mut view.state, versions.len());
                             view.versions = Some(versions);
                         }
@@ -425,8 +423,6 @@ impl App {
                         self.status = format!("Échec de l'aperçu : {e}");
                     }
                 }
-                // Les versions chargées ont pu changer les vues.
-                self.refresh()?;
             }
             AppEvent::ExecProgress {
                 done,
@@ -598,7 +594,8 @@ impl App {
                         if let Some(d) = state.selected().and_then(|i| self.drives.get(i)) {
                             let id = d.id;
                             self.overlay = Overlay::None;
-                            self.select_drive(id, false)?;
+                            let rescan = std::mem::take(&mut self.rescan_on_select);
+                            self.select_drive(id, rescan)?;
                         }
                     }
                     KeyCode::Esc if self.drive.is_some() => self.overlay = Overlay::None,
@@ -680,7 +677,9 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    let rule = p.rule(p.selected);
+                    let Some(rule) = p.rule(p.selected) else {
+                        return Ok(());
+                    };
                     let label = std::mem::take(&mut p.label);
                     let targets = std::mem::take(&mut p.targets);
                     self.start_prepare(label, targets, rule);
@@ -870,6 +869,11 @@ impl App {
         let Some(drive_id) = self.drive_id() else {
             return;
         };
+        // La sélection manuelle passe directement ici, sans le sélecteur de règle.
+        if self.scan.is_some() {
+            self.status = "Attendez la fin du scan avant de nettoyer.".into();
+            return;
+        }
         let cancel: Cancel = Arc::new(AtomicBool::new(false));
         self.cancel = Some(cancel.clone());
         self.overlay = Overlay::Preparing {

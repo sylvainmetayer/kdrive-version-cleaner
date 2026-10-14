@@ -52,9 +52,7 @@ L'outil ne supprime jamais la version courante, ni une version marquée « conse
 - **Limite de l'API** : 60 requêtes par minute. Le client attend au moins 1 s entre deux requêtes et réessaie après une erreur 429 ou 5xx.
 - **Scan** : la racine est d'abord listée seule, car l'API refuse `depth=unlimited` sur la racine. Chaque dossier de premier niveau est ensuite listé en profondeur, par pages de 1000 éléments.
 - **Chargement des versions** : il se fait à la demande, quand on ouvre un fichier ou qu'on calcule un aperçu. Cela coûte une requête par fichier, et une ETA est affichée.
-- **Repérage de la version courante** : on compare le nombre de versions annoncé par le fichier (`version.number`) à la longueur de la liste `/versions`.
-  - Si la liste a un élément de moins, la version courante n'en fait pas partie.
-  - Sinon, on considère que la plus récente de la liste est la version courante, et elle est protégée.
+- **Version courante** : la plus récente de la liste `/versions` est toujours traitée comme courante et protégée. Si l'API n'inclut pas la version courante dans cette liste, on conserve au pire une ancienne version de trop.
 
 ## Développement
 

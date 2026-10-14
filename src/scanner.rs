@@ -84,7 +84,7 @@ async fn run(
     files.sort_by_key(|f| f.id);
     files.dedup_by_key(|f| f.id);
 
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::cleaner::now();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let mut db = Db::open(&db_path)?;
         db.replace_tree(drive_id, &files, now)

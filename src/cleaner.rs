@@ -41,7 +41,7 @@ pub struct ExecSummary {
 
 pub type Cancel = Arc<AtomicBool>;
 
-fn now() -> i64 {
+pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
@@ -97,8 +97,7 @@ pub async fn prepare(
                 }
             };
             plan.files_checked += 1;
-            let in_list = rules::current_in_list(versions.len(), entry.nb_versions);
-            for v in rules::select_versions(&versions, in_list, &rule, now) {
+            for v in rules::select_versions(&versions, &rule, now) {
                 plan.total_size += v.size;
                 plan.items.push(PlannedDeletion {
                     file_id: entry.id,

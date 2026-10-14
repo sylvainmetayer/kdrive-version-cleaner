@@ -10,7 +10,6 @@ pub struct Envelope<T> {
     pub cursor: Option<String>,
     pub has_more: Option<bool>,
     // Pagination par page
-    pub page: Option<u32>,
     pub pages: Option<u32>,
 }
 

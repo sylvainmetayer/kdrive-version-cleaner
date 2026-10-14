@@ -377,15 +377,17 @@ impl Db {
 
     /// Fichiers versionnés d'un dossier, récursivement.
     pub fn versioned_descendants(&self, drive_id: i64, dir: &Entry) -> Result<Vec<Entry>> {
+        // Comparaison exacte : LIKE ignore la casse et inclurait « /docs » pour « /Docs ».
         let prefix = if dir.id == crate::api::ROOT_DIR_ID {
-            "/%".to_string()
+            "/".to_string()
         } else {
-            format!("{}/%", like_escape(&dir.path))
+            format!("{}/", dir.path)
         };
         self.entries(
             &format!(
                 "SELECT {ENTRY_COLS} FROM files
-                 WHERE drive_id = ?1 AND NOT is_dir AND nb_versions > 1 AND path LIKE ?2 ESCAPE '\\'
+                 WHERE drive_id = ?1 AND NOT is_dir AND nb_versions > 1
+                   AND substr(path, 1, length(?2)) = ?2
                  ORDER BY versions_size DESC"
             ),
             params![drive_id, prefix],
@@ -642,6 +644,10 @@ mod tests {
             last_modified_at: 0,
         };
         assert_eq!(db.versioned_descendants(7, &root).unwrap().len(), 2);
+        // Un dossier qui ne diffère que par la casse n'est pas un descendant.
+        let mut docs = db.entry(7, 10).unwrap().unwrap();
+        docs.path = "/docs".into();
+        assert!(db.versioned_descendants(7, &docs).unwrap().is_empty());
         let f = SearchFilter {
             extension: ".xlsx".into(),
             ..Default::default()
