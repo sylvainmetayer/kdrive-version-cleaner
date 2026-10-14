@@ -286,3 +286,84 @@ async fn drive_picker_and_scan_events() {
     h.key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert!(h.app.quit);
 }
+
+#[tokio::test]
+async fn rescan_export_and_cancel() {
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/3/drive/{DRIVE}/files/1/files")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "success", "has_more": false,
+            "data": [{"id": 30, "name": "notes.md", "type": "file", "parent_id": 1, "size": 100,
+                      "version": {"number": 2, "total_size": 200, "keep_forever": false}}]
+        })))
+        .mount(&server)
+        .await;
+    mock_versions(
+        &server,
+        30,
+        json!([
+            {"id": 2, "size": 100, "created_at": kdvc::now()},
+            {"id": 1, "size": 100, "created_at": kdvc::now() - 10 * DAY},
+        ]),
+    )
+    .await;
+    let mut h = Harness::new(&server, 1);
+    h.app.select_drive(DRIVE, false).unwrap();
+
+    // r : rescan (un seul fichier à la racine).
+    h.key(KeyCode::Char('r'));
+    assert!(h.app.scan.is_some());
+    // Pendant un scan, le nettoyage est bloqué.
+    h.key(KeyCode::Char('3'));
+    h.key(KeyCode::Char('c'));
+    assert!(h.app.status.contains("fin du scan"), "{}", h.app.status);
+    h.pump(|e| matches!(e, AppEvent::ScanDone(_))).await;
+    assert!(
+        h.app.status.contains("Scan terminé : 1 fichiers"),
+        "{}",
+        h.app.status
+    );
+
+    // Lancement d'un aperçu puis Échap : demande d'annulation.
+    h.key(KeyCode::Char('c'));
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Enter);
+    assert!(matches!(h.app.overlay, Overlay::Preparing { .. }));
+    h.key(KeyCode::Esc);
+    assert_eq!(h.app.status, "Annulation…");
+    h.pump(|e| matches!(e, AppEvent::PrepareDone(_))).await;
+
+    // Export CSV du journal (vide) dans un dossier temporaire.
+    let out = tempfile::tempdir().unwrap();
+    let path = h.app.export_log(out.path()).unwrap();
+    let csv = std::fs::read_to_string(path).unwrap();
+    assert!(csv.starts_with("date,drive_id,file_id,chemin"));
+}
+
+#[tokio::test]
+async fn drive_picker_keys() {
+    let server = MockServer::start().await;
+    let mut h = Harness::new(&server, 2);
+    // Sans drive choisi, Échap ne ferme pas le sélecteur, q quitte.
+    h.app.open_drive_picker();
+    h.key(KeyCode::Esc);
+    assert!(matches!(h.app.overlay, Overlay::DrivePicker(_)));
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Up);
+    h.key(KeyCode::Enter);
+    // Drive choisi : d rouvre le sélecteur, Échap le ferme.
+    h.key(KeyCode::Char('d'));
+    assert!(matches!(h.app.overlay, Overlay::DrivePicker(_)));
+    h.key(KeyCode::Esc);
+    assert!(matches!(h.app.overlay, Overlay::None));
+    h.app.open_drive_picker();
+    h.app.drive = None;
+    h.key(KeyCode::Char('q'));
+    assert!(h.app.quit);
+}

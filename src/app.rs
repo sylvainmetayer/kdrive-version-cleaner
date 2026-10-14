@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -650,7 +650,10 @@ impl App {
                     return Ok(());
                 }
                 if key.code == KeyCode::Char('e') {
-                    self.export_log();
+                    self.status = match self.export_log(Path::new(".")) {
+                        Ok(path) => format!("Journal exporté dans {}", path.display()),
+                        Err(e) => format!("Export impossible : {e:#}"),
+                    };
                 }
             }
         }
@@ -1037,13 +1040,14 @@ impl App {
         ));
     }
 
-    fn export_log(&mut self) {
-        let name = format!(
+    /// Exporte le journal en CSV dans `dir` et renvoie le chemin du fichier.
+    pub fn export_log(&self, dir: &Path) -> Result<PathBuf> {
+        let path = dir.join(format!(
             "kdvc-journal-{}.csv",
             chrono::Local::now().format("%Y%m%d-%H%M%S")
-        );
-        let res = (|| -> Result<()> {
-            let mut w = csv::Writer::from_path(&name)?;
+        ));
+        {
+            let mut w = csv::Writer::from_path(&path)?;
             w.write_record([
                 "date",
                 "drive_id",
@@ -1069,12 +1073,8 @@ impl App {
                 ])?;
             }
             w.flush()?;
-            Ok(())
-        })();
-        self.status = match res {
-            Ok(()) => format!("Journal exporté dans {name}"),
-            Err(e) => format!("Export impossible : {e:#}"),
-        };
+        }
+        Ok(path)
     }
 }
 
@@ -1101,5 +1101,49 @@ mod tests {
         assert_eq!(picker("1", "").rule(1), None);
         assert_eq!(picker("1", "0").rule(1), Some(Rule::OlderThan { days: 0 }));
         assert_eq!(picker("", "").rule(2), Some(Rule::AllButCurrent));
+    }
+
+    #[test]
+    fn rule_picker_keys() {
+        let mut p = picker("1", "90");
+        assert_eq!(p.on_key(KeyCode::Esc), PickerAction::Close);
+        // « garder N » ne descend pas sous 1.
+        p.on_key(KeyCode::Left);
+        assert_eq!(p.keep_n, "1");
+        p.on_key(KeyCode::Char('+'));
+        p.on_key(KeyCode::Right);
+        assert_eq!(p.keep_n, "3");
+        // Jours : pas de 30, plancher à 0.
+        p.on_key(KeyCode::Char('j'));
+        p.on_key(KeyCode::Char('-'));
+        assert_eq!(p.days, "60");
+        for _ in 0..5 {
+            p.on_key(KeyCode::Left);
+        }
+        assert_eq!(p.days, "0");
+        // Le premier chiffre tapé remplace la valeur, 5 chiffres au plus.
+        p.on_key(KeyCode::Char('k'));
+        p.on_key(KeyCode::Up);
+        assert_eq!(p.selected, 0);
+        for c in "1234567".chars() {
+            p.on_key(KeyCode::Char(c));
+        }
+        assert_eq!(p.keep_n, "12345");
+        assert_eq!(
+            p.on_key(KeyCode::Enter),
+            PickerAction::Apply(Rule::KeepLast(12345))
+        );
+        // « tout sauf la courante » n'a pas de paramètre.
+        p.on_key(KeyCode::Down);
+        p.on_key(KeyCode::Down);
+        p.on_key(KeyCode::Down);
+        p.on_key(KeyCode::Backspace);
+        p.on_key(KeyCode::Char('4'));
+        p.on_key(KeyCode::Right);
+        assert_eq!(p.on_key(KeyCode::Char('x')), PickerAction::None);
+        assert_eq!(
+            p.on_key(KeyCode::Enter),
+            PickerAction::Apply(Rule::AllButCurrent)
+        );
     }
 }
