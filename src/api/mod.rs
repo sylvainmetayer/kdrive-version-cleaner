@@ -16,6 +16,8 @@ pub const DEFAULT_BASE_URL: &str = "https://api.infomaniak.com";
 /// L'API Infomaniak limite à 60 requêtes par minute.
 pub const DEFAULT_MIN_INTERVAL: Duration = Duration::from_millis(1000);
 const MAX_ATTEMPTS: u32 = 6;
+/// Plafond d'attente entre deux essais, quel que soit le `Retry-After` reçu.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(120);
 pub const ROOT_DIR_ID: i64 = 1;
 
 /// Espace les requêtes d'au moins `interval`.
@@ -32,6 +34,12 @@ impl RateLimiter {
         *next = at + self.interval;
         drop(next);
         sleep_until(at).await;
+    }
+
+    /// Repousse toutes les requêtes (y compris celles des autres tâches) d'au moins `wait`.
+    async fn defer(&self, wait: Duration) {
+        let mut next = self.next.lock().await;
+        *next = (*next).max(Instant::now() + wait);
     }
 }
 
@@ -121,12 +129,21 @@ impl Client {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<u64>().ok())
                     .map(Duration::from_secs)
-                    .unwrap_or_else(|| backoff(attempt));
-                sleep(wait).await;
+                    .unwrap_or_else(|| backoff(attempt))
+                    .min(MAX_RETRY_WAIT);
+                if status == StatusCode::TOO_MANY_REQUESTS {
+                    // La limite est globale au token : les autres tâches doivent attendre aussi.
+                    self.limiter.defer(wait).await;
+                } else {
+                    sleep(wait).await;
+                }
                 continue;
             }
 
-            let body = resp.text().await?;
+            let body = resp
+                .text()
+                .await
+                .with_context(|| format!("{method} {path} : lecture de la réponse"))?;
             let env: Envelope<T> = serde_json::from_str(&body).with_context(|| {
                 format!(
                     "{method} {path} : réponse illisible (HTTP {status}) : {}",

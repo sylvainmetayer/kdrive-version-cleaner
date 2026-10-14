@@ -132,8 +132,8 @@ pub struct SearchForm {
     pub focus: usize,
     pub editing: bool,
     /// Filtre de la dernière recherche lancée, réutilisé au rafraîchissement
-    /// (les champs peuvent être en cours de modification).
-    pub applied: SearchFilter,
+    /// (les champs peuvent être en cours de modification). `None` avant la première recherche.
+    pub applied: Option<SearchFilter>,
 }
 
 impl SearchForm {
@@ -255,7 +255,7 @@ impl App {
                 fields: [String::new(), String::new(), String::new(), "2".into()],
                 focus: 0,
                 editing: false,
-                applied: SearchFilter::default(),
+                applied: None,
             },
             search_results: Vec::new(),
             search_state: TableState::default(),
@@ -319,8 +319,9 @@ impl App {
         clamp(&mut self.explorer_state, self.explorer.len());
         self.top = self.db.top(id, LIST_LIMIT)?;
         clamp(&mut self.top_state, self.top.len());
-        if !self.search_results.is_empty() {
-            self.search_results = self.db.search(id, &self.search.applied, LIST_LIMIT)?;
+        // Relance aussi une recherche restée vide : un scan peut lui donner des résultats.
+        if let Some(filter) = &self.search.applied {
+            self.search_results = self.db.search(id, filter, LIST_LIMIT)?;
             clamp(&mut self.search_state, self.search_results.len());
         }
         self.log = self.db.log(id)?;
@@ -464,10 +465,13 @@ impl App {
             return Ok(());
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            if let Some(c) = &self.cancel {
-                c.store(true, Ordering::Relaxed);
-            } else {
-                self.quit = true;
+            // Premier Ctrl+C : annulation propre ; second : on quitte même si une
+            // requête reste bloquée (attente de réessai, timeout…).
+            match &self.cancel {
+                Some(c) if !c.swap(true, Ordering::Relaxed) => {
+                    self.status = "Annulation… (Ctrl+C à nouveau pour quitter)".into();
+                }
+                _ => self.quit = true,
             }
             return Ok(());
         }
@@ -572,8 +576,9 @@ impl App {
             KeyCode::Enter => {
                 f.editing = false;
                 if let Some(id) = self.drive_id() {
-                    self.search.applied = self.search.filter();
-                    self.search_results = self.db.search(id, &self.search.applied, LIST_LIMIT)?;
+                    let filter = self.search.filter();
+                    self.search_results = self.db.search(id, &filter, LIST_LIMIT)?;
+                    self.search.applied = Some(filter);
                     self.search_state = TableState::default();
                     clamp(&mut self.search_state, self.search_results.len());
                     self.status = format!("{} résultat(s).", self.search_results.len());

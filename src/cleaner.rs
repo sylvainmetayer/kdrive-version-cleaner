@@ -25,6 +25,8 @@ pub struct Plan {
     pub rule: String,
     pub items: Vec<PlannedDeletion>,
     pub files_checked: usize,
+    /// Fichiers ayant au moins une version à supprimer.
+    pub files_affected: usize,
     pub total_size: i64,
     /// Fichiers dont les versions n'ont pas pu être chargées.
     pub errors: Vec<String>,
@@ -94,7 +96,11 @@ pub async fn prepare(
                 }
             };
             plan.files_checked += 1;
-            for v in rules::select_versions(&versions, &rule, now) {
+            let selected = rules::select_versions(&versions, &rule, now);
+            if !selected.is_empty() {
+                plan.files_affected += 1;
+            }
+            for v in selected {
                 plan.total_size += v.size;
                 plan.items.push(PlannedDeletion {
                     file_id: entry.id,

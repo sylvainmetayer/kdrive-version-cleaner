@@ -771,8 +771,6 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
                 Constraint::Length(1),
             ])
             .areas(inner);
-            let files: std::collections::HashSet<i64> =
-                plan.items.iter().map(|i| i.file_id).collect();
             let mut lines = vec![
                 Line::from(vec![
                     Span::raw("Règle : ").dim(),
@@ -782,7 +780,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
                     Span::raw(format!(
                         "{} version(s) à supprimer dans {} fichier(s) ({} analysés) — espace libéré : ",
                         fmt_count(plan.items.len() as i64),
-                        fmt_count(files.len() as i64),
+                        fmt_count(plan.files_affected as i64),
                         fmt_count(plan.files_checked as i64)
                     )),
                     Span::styled(

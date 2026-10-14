@@ -87,14 +87,18 @@ async fn run(
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     while !app.quit {
         terminal.draw(|f| ui::draw(f, app))?;
-        tokio::select! {
+        let handled = tokio::select! {
             ev = events.next() => match ev {
-                Some(Ok(ev)) => app.on_terminal_event(ev)?,
+                Some(Ok(ev)) => app.on_terminal_event(ev),
                 Some(Err(e)) => return Err(e.into()),
                 None => break,
             },
-            Some(msg) = rx.recv() => app.on_app_event(msg)?,
-            _ = tick.tick() => {}
+            Some(msg) = rx.recv() => app.on_app_event(msg),
+            _ = tick.tick() => Ok(()),
+        };
+        // Une erreur de lecture du cache ne doit pas fermer l'application en pleine session.
+        if let Err(e) = handled {
+            app.status = format!("Erreur : {e:#}");
         }
         // Après une sélection de drive à l'aveugle, le picker peut se refermer sans drive.
         if app.drive.is_none() && matches!(app.overlay, Overlay::None) {
