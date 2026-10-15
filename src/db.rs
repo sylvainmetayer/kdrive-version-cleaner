@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use crate::api::{Drive, RemoteFile, Version};
 
@@ -107,6 +107,15 @@ impl Db {
         Self::init(conn)
     }
 
+    /// Transaction qui prend le verrou d'écriture dès le début. En mode WAL, une
+    /// transaction différée qui lit puis écrit échoue aussitôt (SQLITE_BUSY_SNAPSHOT,
+    /// sans busy_timeout) si une autre connexion a écrit entre-temps.
+    fn write_tx(&mut self) -> Result<Transaction<'_>> {
+        Ok(self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?)
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
@@ -203,7 +212,7 @@ impl Db {
         now: i64,
     ) -> Result<Vec<String>> {
         let paths = build_paths(files);
-        let tx = self.conn.transaction()?;
+        let tx = self.write_tx()?;
         tx.execute_batch(
             "DROP TABLE IF EXISTS temp.kept;
              DROP TABLE IF EXISTS temp.fresh;
@@ -227,6 +236,8 @@ impl Db {
                 .optional()?;
             let mut n = 0;
             if let Some(old) = old {
+                // CROSS JOIN impose à SQLite de partir de `sub` et d'utiliser l'index
+                // sur parent_id ; sinon il parcourt `files` à chaque étape (quadratique).
                 // On descend l'ancien arbre par parent_id, sans entrer dans ce que le
                 // scan vient de relire : un élément déplacé ailleurs depuis n'est pas
                 // ramené dans ce dossier. Le dossier a pu être renommé : le contenu
@@ -238,7 +249,8 @@ impl Db {
                         SELECT id FROM files
                         WHERE drive_id = ?1 AND parent_id = ?2 AND id NOT IN (SELECT id FROM fresh)
                         UNION
-                        SELECT f.id FROM files f JOIN sub ON f.drive_id = ?1 AND f.parent_id = sub.id
+                        SELECT f.id FROM sub CROSS JOIN files f
+                        ON f.drive_id = ?1 AND f.parent_id = sub.id
                         WHERE f.id NOT IN (SELECT id FROM fresh))
                      INSERT INTO kept SELECT drive_id, id, parent_id, name,
                         CASE WHEN substr(path, 1, length(?3)) = ?3
@@ -314,7 +326,7 @@ impl Db {
 
     /// Recalcule les totaux des dossiers à partir des fichiers.
     pub fn recompute_aggregates(&mut self, drive_id: i64) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.write_tx()?;
         aggregates(&tx, drive_id)?;
         tx.commit()?;
         Ok(())
@@ -438,7 +450,7 @@ impl Db {
         versions: &[Version],
         now: i64,
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.write_tx()?;
         tx.execute(
             "DELETE FROM versions WHERE drive_id = ?1 AND file_id = ?2",
             params![drive_id, file_id],
@@ -517,7 +529,7 @@ impl Db {
             .map(|v| v.size)
             .sum();
         let count = versions.len() as i64;
-        let tx = self.conn.transaction()?;
+        let tx = self.write_tx()?;
         let before: Option<(i64, i64)> = tx
             .query_row(
                 "SELECT nb_versions, versions_size FROM files
@@ -672,8 +684,9 @@ fn aggregates(conn: &Connection, drive_id: i64) -> Result<()> {
     let mut totals: HashMap<i64, (i64, i64, i64)> = HashMap::new();
     for n in nodes.values().filter(|n| !n.is_dir) {
         let mut parent = n.parent;
-        // Garde-fou contre un cycle éventuel dans les données.
-        for _ in 0..nodes.len() {
+        // Garde-fou contre un cycle éventuel dans les données, borné comme
+        // `build_paths` pour qu'un cycle ne coûte pas n² tours.
+        for _ in 0..256 {
             let Some(p) = nodes.get(&parent) else { break };
             let t = totals.entry(parent).or_default();
             t.0 += n.size;
@@ -971,6 +984,104 @@ mod tests {
             .replace_tree(7, &files, &[failed(10, "/Docs")], 2)
             .unwrap();
         assert_eq!(report, vec!["/Docs ; aucun contenu en cache, affiché vide"]);
+    }
+
+    /// Gros dossier en échec : 20 000 éléments sur 4 niveaux.
+    fn big_tree() -> Vec<RemoteFile> {
+        let mut files = vec![file(10, 1, "Docs", true, 0, None)];
+        let mut id = 100;
+        for a in 0..20 {
+            let da = id;
+            files.push(file(da, 10, &format!("a{a}"), true, 0, None));
+            id += 1;
+            for b in 0..10 {
+                let db_ = id;
+                files.push(file(db_, da, &format!("b{b}"), true, 0, None));
+                id += 1;
+                for c in 0..100 {
+                    files.push(file(id, db_, &format!("f{c}"), false, 10, Some((2, 30))));
+                    id += 1;
+                }
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn partial_scan_of_big_failed_dir_is_fast() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.upsert_drives(&[Drive {
+            id: 7,
+            name: "d".into(),
+            size: None,
+            used_size: None,
+        }])
+        .unwrap();
+        db.replace_tree(7, &big_tree(), &[], 1).unwrap();
+        let started = std::time::Instant::now();
+        let report = db
+            .replace_tree(
+                7,
+                &[file(10, 1, "Docs", true, 0, None)],
+                &[failed(10, "/Docs")],
+                2,
+            )
+            .unwrap();
+        // En descente quadratique, ce cas prenait plusieurs minutes.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(report, vec!["/Docs ; ancien contenu conservé"]);
+        assert_eq!(db.stats(7).unwrap().files, 20_000);
+    }
+
+    #[test]
+    fn partial_scan_survives_concurrent_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.db");
+        let mut db = Db::open(&path).unwrap();
+        db.upsert_drives(&[Drive {
+            id: 7,
+            name: "d".into(),
+            size: None,
+            used_size: None,
+        }])
+        .unwrap();
+        db.replace_tree(7, &big_tree(), &[], 1).unwrap();
+
+        // Une autre connexion écrit en continu (chargement de versions pendant un scan).
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = std::thread::spawn({
+            let (path, stop) = (path.clone(), stop.clone());
+            move || {
+                let mut other = Db::open(&path).unwrap();
+                let mut i = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let v = Version {
+                        id: i,
+                        size: 1,
+                        created_at: i,
+                        keep_forever: false,
+                    };
+                    other.save_versions(7, 999_999, &[v], i).unwrap();
+                    i += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+        });
+        for n in 0..5 {
+            db.replace_tree(
+                7,
+                &[file(10, 1, "Docs", true, 0, None)],
+                &[failed(10, "/Docs")],
+                n,
+            )
+            .unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
     }
 
     #[test]

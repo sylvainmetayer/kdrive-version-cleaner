@@ -32,6 +32,10 @@ pub fn load_token() -> Result<String> {
             warn_if_world_readable(&path);
             Ok(t.trim().to_string())
         }
+        // Fichier présent mais illisible (droits, contenu non UTF-8…) : on le dit.
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("lecture du token {} impossible", path.display()))
+        }
         _ => bail!(
             "aucun token API trouvé.\n\
              Créez un token (scope « drive ») sur https://manager.infomaniak.com/v3/ng/profile/user/token/list\n\

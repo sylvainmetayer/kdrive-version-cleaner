@@ -49,11 +49,11 @@ Les tâches longues (scan, chargement des versions, aperçu, suppressions) tourn
 ## Invariants de sécurité (à ne jamais casser)
 
 1. **La version courante n'est jamais supprimée.** La plus récente de la liste `/versions` (`rules::current_version_id`) est toujours protégée, car on ne sait pas de façon fiable si l'API inclut la version courante dans cette liste.
-2. **Les versions `keep_forever` ne sont jamais supprimées.**
+2. **Les versions `keep_forever` ne sont jamais supprimées.** Si le champ manque dans la réponse, la version est considérée comme protégée.
 3. **Toute suppression passe par un aperçu**, puis par une confirmation où l'utilisateur tape `oui` (`Overlay::Preview` puis `Overlay::Confirm`). Aucun chemin de code ne doit appeler `cleaner::execute` sans un `Plan` validé.
 4. Les suppressions se font **version par version** (`DELETE /2/drive/{d}/files/{f}/versions/{v}`). L'endpoint de suppression en masse n'est pas utilisé.
 5. **Un `DELETE` n'est pas rejoué** après un timeout ou une erreur 5xx, car le serveur a pu l'appliquer. Il n'est réessayé qu'après une erreur de connexion ou un 429.
-6. Chaque suppression, réussie ou en échec, est **inscrite au journal** (table `deletions`).
+6. Chaque suppression, réussie ou en échec, est **inscrite au journal** (table `deletions`). Pendant les suppressions, un second Ctrl+C attend que la requête en cours soit journalisée avant de quitter.
 7. Une règle dont le paramètre est vide ou invalide est refusée. Elle ne retombe jamais sur la valeur la plus destructrice.
 
 Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être accompagnée de tests.
@@ -77,6 +77,8 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 - Les agrégats des dossiers (`size`, `versions_size`, `versioned_files`) sont recalculés par `recompute_aggregates`. `sync_version_count` les propage aussi aux dossiers parents.
 - Les versions en cache expirent au bout d'1 h (`VERSIONS_TTL_SECS`).
 - Les filtres de chemin utilisent une comparaison de préfixe exacte (`substr(path, 1, length(?)) = ?`), et **jamais `LIKE`**, qui ignore la casse.
+- Toute transaction qui lit puis écrit passe par `Db::write_tx` (`BEGIN IMMEDIATE`). En WAL, une transaction différée échoue aussitôt (SQLITE_BUSY_SNAPSHOT, sans `busy_timeout`) si une autre tâche a écrit entre sa lecture et son écriture.
+- Les requêtes récursives sur l'arbre partent de l'ensemble courant (`CROSS JOIN files`) pour utiliser l'index `parent_id` ; sinon SQLite peut parcourir `files` à chaque étape.
 - Les migrations de schéma se font dans `Db::init` : `CREATE TABLE IF NOT EXISTS`, plus des `ALTER TABLE` gardés par `pragma_table_info`.
 
 ## Tests

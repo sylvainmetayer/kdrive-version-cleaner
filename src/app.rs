@@ -264,6 +264,9 @@ pub struct App {
     pub cancel: Option<Cancel>,
     /// `--rescan` demandé alors que le drive sera choisi dans le sélecteur.
     pub rescan_on_select: bool,
+    /// Second Ctrl+C pendant les suppressions : on quitte dès que la suppression en
+    /// cours est journalisée, sans abandonner une requête DELETE en vol.
+    pub quit_after_exec: bool,
     pub quit: bool,
 }
 
@@ -347,6 +350,7 @@ impl App {
             status: String::new(),
             cancel: None,
             rescan_on_select: false,
+            quit_after_exec: false,
             quit: false,
         }
     }
@@ -558,6 +562,10 @@ impl App {
             }
             AppEvent::ExecDone(summary) => {
                 self.cancel = None;
+                // Toutes les suppressions tentées sont journalisées avant ExecDone.
+                if self.quit_after_exec {
+                    self.quit = true;
+                }
                 // Le bilan doit s'afficher même si la relecture du cache échoue.
                 self.overlay = Overlay::Summary(summary);
                 if let Err(e) = self.refresh() {
@@ -577,10 +585,19 @@ impl App {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             // Premier Ctrl+C : annulation propre ; second : on quitte même si une
-            // requête reste bloquée (attente de réessai, timeout…).
+            // requête reste bloquée (attente de réessai, timeout…), sauf pendant
+            // les suppressions.
+            let executing = matches!(self.overlay, Overlay::Executing { .. });
             match &self.cancel {
                 Some(c) if !c.swap(true, Ordering::Relaxed) => {
                     self.status = "Annulation… (Ctrl+C à nouveau pour quitter)".into();
+                }
+                // Quitter maintenant abandonnerait un DELETE peut-être déjà appliqué
+                // par le serveur, sans l'inscrire au journal.
+                _ if executing => {
+                    self.quit_after_exec = true;
+                    self.status =
+                        "Fermeture dès que la suppression en cours est journalisée…".into();
                 }
                 _ => self.quit = true,
             }
@@ -1076,12 +1093,12 @@ impl App {
                     crate::ui::fmt_date(e.ts),
                     e.drive_id.to_string(),
                     e.file_id.to_string(),
-                    e.path.clone(),
+                    csv_text(&e.path),
                     e.version_id.to_string(),
                     crate::ui::fmt_date(e.version_created_at),
                     e.size.to_string(),
                     if e.ok { "supprimée" } else { "échec" }.to_string(),
-                    e.error.clone().unwrap_or_default(),
+                    csv_text(e.error.as_deref().unwrap_or_default()),
                 ])?;
             }
             w.flush()?;
@@ -1090,9 +1107,27 @@ impl App {
     }
 }
 
+/// Neutralise un texte qui serait lu comme une formule par un tableur (un nom de
+/// fichier comme `=HYPERLINK(…)` peut venir d'un collaborateur du drive).
+fn csv_text(s: &str) -> String {
+    if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csv_text_neutralizes_formulas() {
+        assert_eq!(csv_text("=1+1"), "'=1+1");
+        assert_eq!(csv_text("@SUM(A1)"), "'@SUM(A1)");
+        assert_eq!(csv_text("/Docs/=a.txt"), "/Docs/=a.txt");
+        assert_eq!(csv_text(""), "");
+    }
 
     fn picker(keep_n: &str, days: &str) -> RulePicker {
         RulePicker {

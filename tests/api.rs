@@ -202,7 +202,7 @@ async fn inconsistent_pagination_is_an_error() {
     Mock::given(method("GET"))
         .and(path("/3/drive/7/files/2/versions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "result": "success", "data": [{"id": 1}], "cursor": "same", "has_more": true
+            "result": "success", "data": [{"id": 1, "created_at": 1}], "cursor": "same", "has_more": true
         })))
         .mount(&server)
         .await;
@@ -248,7 +248,7 @@ async fn versions_cursor_cycle_is_an_error() {
             .and(path("/3/drive/7/files/2/versions"))
             .and(query_param("cursor", from))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "result": "success", "data": [{"id": 1}], "cursor": to, "has_more": true
+                "result": "success", "data": [{"id": 1, "created_at": 1}], "cursor": to, "has_more": true
             })))
             .mount(&server)
             .await;
@@ -256,7 +256,7 @@ async fn versions_cursor_cycle_is_an_error() {
     Mock::given(method("GET"))
         .and(path("/3/drive/7/files/2/versions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "result": "success", "data": [{"id": 1}], "cursor": "a", "has_more": true
+            "result": "success", "data": [{"id": 1, "created_at": 1}], "cursor": "a", "has_more": true
         })))
         .mount(&server)
         .await;

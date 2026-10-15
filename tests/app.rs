@@ -1,6 +1,9 @@
 //! Parcours clavier de la TUI et rendu des écrans, contre une API simulée.
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use common::*;
 use kdvc::api::Drive;
 use kdvc::app::{App, Overlay, Tab};
@@ -137,6 +140,31 @@ async fn tabs_and_explorer_navigation() {
     assert!(matches!(h.app.overlay, Overlay::None));
 
     h.key(KeyCode::Char('q'));
+    assert!(h.app.quit);
+}
+
+#[tokio::test]
+async fn double_ctrl_c_waits_for_inflight_delete() {
+    let server = MockServer::start().await;
+    let mut h = Harness::new(&server, 1);
+    h.app.select_drive(DRIVE, false).unwrap();
+    h.app.overlay = Overlay::Executing {
+        done: 0,
+        total: 3,
+        freed: 0,
+        failed: 0,
+    };
+    h.app.cancel = Some(Arc::new(AtomicBool::new(false)));
+    h.key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    h.key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(
+        !h.app.quit,
+        "un DELETE en vol doit être journalisé avant de quitter"
+    );
+    assert!(h.app.status.contains("Fermeture"), "{}", h.app.status);
+    h.app
+        .on_app_event(AppEvent::ExecDone(Default::default()))
+        .unwrap();
     assert!(h.app.quit);
 }
 

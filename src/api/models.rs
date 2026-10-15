@@ -85,8 +85,26 @@ pub struct Version {
     pub id: i64,
     #[serde(default)]
     pub size: i64,
-    #[serde(default)]
+    /// Obligatoire : une date absente (0) ferait passer la version pour très
+    /// ancienne auprès de la règle « plus vieilles que X jours ».
     pub created_at: i64,
-    #[serde(default)]
+    /// Absent de la réponse : la version est considérée comme protégée.
+    #[serde(default = "protected")]
     pub keep_forever: bool,
+}
+
+fn protected() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_defaults_err_on_the_safe_side() {
+        let v: Version = serde_json::from_str(r#"{"id": 1, "created_at": 5}"#).unwrap();
+        assert!(v.keep_forever, "keep_forever absent : version protégée");
+        assert!(serde_json::from_str::<Version>(r#"{"id": 1, "size": 3}"#).is_err());
+    }
 }
