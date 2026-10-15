@@ -158,12 +158,15 @@ impl Db {
         )?;
         if !has_scan_versions {
             // Les anciens scans ne comptaient pas l'espace des fichiers à une seule
-            // ancienne version : on force un nouveau scan.
-            conn.execute_batch(
+            // ancienne version : on force un nouveau scan. Une seule transaction : une
+            // migration interrompue ne doit pas laisser une seule des deux colonnes.
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(
                 "ALTER TABLE files ADD COLUMN scan_versions INTEGER;
                  ALTER TABLE files ADD COLUMN scan_versions_size INTEGER;
                  UPDATE drives SET scanned_at = NULL;",
             )?;
+            tx.commit()?;
         }
         Ok(Self { conn })
     }
@@ -638,7 +641,16 @@ impl Db {
     }
 
     /// Oublie les versions en cache d'un fichier : elles seront rechargées depuis l'API.
+    ///
+    /// Appelée quand l'état réel est inconnu (DELETE en échec, peut-être appliqué) :
+    /// la référence du scan n'est plus sûre non plus. Sans elle, la plus récente des
+    /// versions reste protégée jusqu'au prochain scan.
     pub fn forget_versions(&self, drive_id: i64, file_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE files SET scan_versions = NULL, scan_versions_size = NULL
+             WHERE drive_id = ?1 AND id = ?2",
+            params![drive_id, file_id],
+        )?;
         self.conn.execute(
             "DELETE FROM versions WHERE drive_id = ?1 AND file_id = ?2",
             params![drive_id, file_id],
@@ -1296,5 +1308,6 @@ mod tests {
         assert_eq!(db.entry(7, 10).unwrap().unwrap().versions_size, 270);
         db.forget_versions(7, 20).unwrap();
         assert!(db.cached_versions(7, 20, 0).unwrap().is_none());
+        assert_eq!(db.entry(7, 20).unwrap().unwrap().scan(), None);
     }
 }

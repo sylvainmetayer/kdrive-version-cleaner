@@ -667,9 +667,9 @@ fn draw_versions(f: &mut Frame, view: &mut VersionsView, full_w: u16, full_h: u1
     .areas(inner);
     f.render_widget(
         Paragraph::new(format!(
-            "Taille courante : {} · {} anciennes versions : {}",
+            "Taille courante : {} · {} ancienne(s) version(s) : {}",
             fmt_size(view.entry.size),
-            view.entry.nb_versions,
+            fmt_count(view.entry.nb_versions),
             fmt_size(view.entry.versions_size)
         )),
         info,

@@ -104,6 +104,8 @@ async fn prepare_then_execute_keep_last() {
     );
     // Après un échec, le cache des versions est oublié pour être rechargé.
     assert!(db.cached_versions(DRIVE, 20, 0).unwrap().is_none());
+    // … et la référence du scan aussi : la 1 a pu être supprimée côté serveur.
+    assert_eq!(db.entry(DRIVE, 20).unwrap().unwrap().scan(), None);
     // Le compte local a perdu la version supprimée.
     assert_eq!(db.entry(DRIVE, 20).unwrap().unwrap().nb_versions, 4);
     server.verify().await;
