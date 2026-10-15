@@ -393,7 +393,7 @@ fn draw_entries(
         };
         let versions = if e.is_dir {
             format!("{} fich.", fmt_count(e.versioned_files))
-        } else if e.nb_versions > 1 {
+        } else if e.nb_versions > 0 {
             fmt_count(e.nb_versions)
         } else {
             String::new()
@@ -405,7 +405,7 @@ fn draw_entries(
         };
         let style = if e.is_dir {
             Style::new().fg(Color::Blue).bold()
-        } else if e.nb_versions <= 1 {
+        } else if e.nb_versions == 0 {
             Style::new().dim()
         } else {
             Style::new()
@@ -437,7 +437,7 @@ fn draw_entries(
         ],
     )
     .header(
-        Row::new(["Nom", "Versions", "Poids vers.", "", "Taille", "Modifié"])
+        Row::new(["Nom", "Anc. vers.", "Poids vers.", "", "Taille", "Modifié"])
             .style(Style::new().bold().underlined()),
     )
     .row_highlight_style(highlight())
@@ -667,7 +667,7 @@ fn draw_versions(f: &mut Frame, view: &mut VersionsView, full_w: u16, full_h: u1
     .areas(inner);
     f.render_widget(
         Paragraph::new(format!(
-            "Taille courante : {} · {} versions · anciennes versions : {}",
+            "Taille courante : {} · {} anciennes versions : {}",
             fmt_size(view.entry.size),
             view.entry.nb_versions,
             fmt_size(view.entry.versions_size)

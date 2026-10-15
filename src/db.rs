@@ -5,6 +5,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use crate::api::{Drive, RemoteFile, Version};
+use crate::rules::ScanVersions;
 
 /// Dossier que le scan n'a pas pu lister : son contenu en cache est conservé.
 pub struct FailedDir {
@@ -27,11 +28,29 @@ pub struct Entry {
     pub path: String,
     pub is_dir: bool,
     pub size: i64,
+    /// Nombre d'anciennes versions (hors version courante).
     pub nb_versions: i64,
     /// Espace occupé par les anciennes versions (taille totale - taille courante).
     pub versions_size: i64,
     pub versioned_files: i64,
     pub last_modified_at: i64,
+    /// Anciennes versions annoncées par l'API au scan (`version.number`), ajustées
+    /// seulement par nos suppressions réussies. Sert à vérifier qu'une liste
+    /// `/versions` ne contient pas la version courante.
+    pub scan_versions: Option<i64>,
+    /// `total_size - size` au scan, ajusté comme `scan_versions`.
+    pub scan_versions_size: Option<i64>,
+}
+
+impl Entry {
+    /// Anciennes versions vues au scan, si l'API les a toutes décrites.
+    pub fn scan(&self) -> Option<ScanVersions> {
+        Some(ScanVersions {
+            count: self.scan_versions?,
+            size: self.scan_versions_size?,
+            file_size: self.size,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -76,7 +95,7 @@ pub struct LogEntry {
     pub error: Option<String>,
 }
 
-const ENTRY_COLS: &str = "id, parent_id, name, path, is_dir, size, nb_versions, versions_size, versioned_files, last_modified_at";
+const ENTRY_COLS: &str = "id, parent_id, name, path, is_dir, size, nb_versions, versions_size, versioned_files, last_modified_at, scan_versions, scan_versions_size";
 
 fn entry_from_row(r: &Row) -> rusqlite::Result<Entry> {
     Ok(Entry {
@@ -90,6 +109,8 @@ fn entry_from_row(r: &Row) -> rusqlite::Result<Entry> {
         versions_size: r.get(7)?,
         versioned_files: r.get(8)?,
         last_modified_at: r.get(9)?,
+        scan_versions: r.get(10)?,
+        scan_versions_size: r.get(11)?,
     })
 }
 
@@ -130,6 +151,20 @@ impl Db {
         if !has_warning {
             conn.execute("ALTER TABLE drives ADD COLUMN scan_warning TEXT", [])?;
         }
+        let has_scan_versions: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('files') WHERE name = 'scan_versions'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_scan_versions {
+            // Les anciens scans ne comptaient pas l'espace des fichiers à une seule
+            // ancienne version : on force un nouveau scan.
+            conn.execute_batch(
+                "ALTER TABLE files ADD COLUMN scan_versions INTEGER;
+                 ALTER TABLE files ADD COLUMN scan_versions_size INTEGER;
+                 UPDATE drives SET scanned_at = NULL;",
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -144,6 +179,7 @@ impl Db {
                 name TEXT NOT NULL, path TEXT NOT NULL, is_dir INTEGER NOT NULL,
                 size INTEGER NOT NULL, nb_versions INTEGER NOT NULL, versions_size INTEGER NOT NULL,
                 versioned_files INTEGER NOT NULL, last_modified_at INTEGER NOT NULL,
+                scan_versions INTEGER, scan_versions_size INTEGER,
                 PRIMARY KEY(drive_id, id));
              CREATE INDEX IF NOT EXISTS files_parent ON files(drive_id, parent_id);
              CREATE INDEX IF NOT EXISTS files_vsize ON files(drive_id, versions_size);
@@ -255,7 +291,8 @@ impl Db {
                      INSERT INTO kept SELECT drive_id, id, parent_id, name,
                         CASE WHEN substr(path, 1, length(?3)) = ?3
                              THEN ?4 || substr(path, length(?3)) ELSE path END,
-                        is_dir, size, nb_versions, versions_size, versioned_files, last_modified_at
+                        is_dir, size, nb_versions, versions_size, versioned_files, last_modified_at,
+                        scan_versions, scan_versions_size
                      FROM files WHERE drive_id = ?1 AND id IN (SELECT id FROM sub)
                         AND id NOT IN (SELECT id FROM kept)",
                     params![drive_id, dir.id, format!("{old}/"), new],
@@ -280,16 +317,22 @@ impl Db {
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO files(drive_id, id, parent_id, name, path, is_dir, size,
-                    nb_versions, versions_size, versioned_files, last_modified_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
+                    nb_versions, versions_size, versioned_files, last_modified_at,
+                    scan_versions, scan_versions_size)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12)",
             )?;
             for f in files {
                 let size = f.size.unwrap_or(0);
-                let (nb, vsize) = match &f.version {
-                    Some(v) if v.number > 1 => {
-                        (v.number, (v.total_size.unwrap_or(size) - size).max(0))
-                    }
-                    Some(v) => (v.number, 0),
+                // `number` compte les anciennes versions seulement : un fichier modifié
+                // une fois a `number = 1` et `total_size` ≈ 2 × `size`.
+                let scan = f
+                    .version
+                    .as_ref()
+                    .filter(|_| !f.is_dir())
+                    .map(|v| (v.number, v.total_size.map(|t| t - size)));
+                let (nb, vsize) = match scan {
+                    Some((n, Some(old))) if n > 0 => (n, old.max(0)),
+                    Some((n, _)) => (n.max(0), 0),
                     None => (0, 0),
                 };
                 stmt.execute(params![
@@ -306,6 +349,8 @@ impl Db {
                     nb,
                     vsize,
                     f.last_modified_at.unwrap_or(0),
+                    scan.map(|(n, _)| n),
+                    scan.and_then(|(_, old)| old),
                 ])?;
             }
         }
@@ -339,8 +384,8 @@ impl Db {
             "SELECT
                 COALESCE(SUM(NOT is_dir), 0), COALESCE(SUM(is_dir), 0),
                 COALESCE(SUM(CASE WHEN is_dir THEN 0 ELSE size END), 0),
-                COALESCE(SUM(NOT is_dir AND nb_versions > 1), 0),
-                COALESCE(SUM(CASE WHEN NOT is_dir AND nb_versions > 1 THEN nb_versions - 1 ELSE 0 END), 0),
+                COALESCE(SUM(NOT is_dir AND nb_versions > 0), 0),
+                COALESCE(SUM(CASE WHEN is_dir THEN 0 ELSE nb_versions END), 0),
                 COALESCE(SUM(CASE WHEN is_dir THEN 0 ELSE versions_size END), 0)
              FROM files WHERE drive_id = ?1",
             [drive_id],
@@ -389,7 +434,7 @@ impl Db {
         self.entries(
             &format!(
                 "SELECT {ENTRY_COLS} FROM files
-                 WHERE drive_id = ?1 AND NOT is_dir AND nb_versions > 1
+                 WHERE drive_id = ?1 AND NOT is_dir AND nb_versions > 0
                  ORDER BY versions_size DESC, nb_versions DESC LIMIT ?2"
             ),
             params![drive_id, limit],
@@ -433,7 +478,7 @@ impl Db {
         self.entries(
             &format!(
                 "SELECT {ENTRY_COLS} FROM files
-                 WHERE drive_id = ?1 AND NOT is_dir AND nb_versions > 1
+                 WHERE drive_id = ?1 AND NOT is_dir AND nb_versions > 0
                    AND substr(path, 1, length(?2)) = ?2
                  ORDER BY versions_size DESC"
             ),
@@ -513,42 +558,45 @@ impl Db {
         Ok(Some(rows.collect::<rusqlite::Result<_>>()?))
     }
 
-    /// Aligne le compte de versions d'un fichier sur une liste fraîchement chargée,
-    /// le scan ayant pu en voir moins (versions ajoutées depuis). Les totaux des
-    /// dossiers parents sont ajustés d'autant.
+    /// Aligne le compte d'anciennes versions d'un fichier sur une liste fraîchement
+    /// chargée, le scan ayant pu en voir moins (versions ajoutées depuis). Les totaux
+    /// des dossiers parents sont ajustés d'autant. Les valeurs du scan
+    /// (`scan_versions*`) ne sont pas modifiées.
     pub fn sync_version_count(
         &mut self,
         drive_id: i64,
         file_id: i64,
         versions: &[Version],
     ) -> Result<()> {
-        let current = crate::rules::current_version_id(versions);
-        let old_size: i64 = versions
-            .iter()
-            .filter(|v| Some(v.id) != current)
-            .map(|v| v.size)
-            .sum();
-        let count = versions.len() as i64;
         let tx = self.write_tx()?;
-        let before: Option<(i64, i64)> = tx
+        let Some(entry) = tx
             .query_row(
-                "SELECT nb_versions, versions_size FROM files
-                 WHERE drive_id = ?1 AND id = ?2 AND NOT is_dir",
+                &format!(
+                    "SELECT {ENTRY_COLS} FROM files WHERE drive_id = ?1 AND id = ?2 AND NOT is_dir"
+                ),
                 params![drive_id, file_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                entry_from_row,
             )
-            .optional()?;
-        let Some((nb, vsize)) = before.filter(|(nb, _)| *nb < count) else {
+            .optional()?
+        else {
             return Ok(());
         };
+        let current = crate::rules::current_version_id(versions, entry.scan());
+        let old: Vec<&Version> = versions.iter().filter(|v| Some(v.id) != current).collect();
+        let count = old.len() as i64;
+        let old_size: i64 = old.iter().map(|v| v.size).sum();
+        let (nb, vsize) = (entry.nb_versions, entry.versions_size);
+        if nb >= count {
+            return Ok(());
+        }
         let new_vsize = vsize.max(old_size);
         tx.execute(
-            "UPDATE files SET nb_versions = ?3, versions_size = ?4, versioned_files = (?3 > 1)
+            "UPDATE files SET nb_versions = ?3, versions_size = ?4, versioned_files = (?3 > 0)
              WHERE drive_id = ?1 AND id = ?2",
             params![drive_id, file_id, count, new_vsize],
         )?;
         let delta_size = new_vsize - vsize;
-        let delta_versioned = i64::from(nb <= 1 && count > 1);
+        let delta_versioned = i64::from(nb == 0);
         if delta_size != 0 || delta_versioned != 0 {
             // UNION (et non UNION ALL) arrête la remontée en cas de cycle.
             tx.execute(
@@ -579,8 +627,10 @@ impl Db {
             params![drive_id, file_id, version_id],
         )?;
         self.conn.execute(
-            "UPDATE files SET nb_versions = MAX(nb_versions - 1, 1),
-                versions_size = MAX(versions_size - ?3, 0)
+            "UPDATE files SET nb_versions = MAX(nb_versions - 1, 0),
+                versions_size = MAX(versions_size - ?3, 0),
+                scan_versions = scan_versions - 1,
+                scan_versions_size = scan_versions_size - ?3
              WHERE drive_id = ?1 AND id = ?2",
             params![drive_id, file_id, size],
         )?;
@@ -668,7 +718,7 @@ fn aggregates(conn: &Connection, drive_id: i64) -> Result<()> {
                     is_dir,
                     size: if is_dir { 0 } else { r.get(3)? },
                     vsize: if is_dir { 0 } else { r.get(4)? },
-                    versioned: if !is_dir && r.get::<_, i64>(5)? > 1 {
+                    versioned: if !is_dir && r.get::<_, i64>(5)? > 0 {
                         1
                     } else {
                         0
@@ -705,7 +755,7 @@ fn aggregates(conn: &Connection, drive_id: i64) -> Result<()> {
             stmt.execute(params![drive_id, id, s, v, c])?;
         }
         conn.execute(
-            "UPDATE files SET versioned_files = (nb_versions > 1) WHERE drive_id = ?1 AND NOT is_dir",
+            "UPDATE files SET versioned_files = (nb_versions > 0) WHERE drive_id = ?1 AND NOT is_dir",
             [drive_id],
         )?;
     }
@@ -783,7 +833,7 @@ mod tests {
             file(11, 10, "Sub_dir", true, 0, None),
             file(20, 10, "a.docx", false, 100, Some((3, 400))),
             file(21, 11, "b.xlsx", false, 50, Some((2, 120))),
-            file(22, 1, "c.txt", false, 10, Some((1, 10))),
+            file(22, 1, "c.txt", false, 10, Some((1, 25))),
         ];
         db.replace_tree(7, &files, &[], 1).unwrap();
         db
@@ -808,8 +858,76 @@ mod tests {
                 s.old_versions,
                 s.versions_size
             ),
-            (3, 2, 2, 3, 370)
+            (3, 2, 3, 6, 385)
         );
+    }
+
+    #[test]
+    fn single_old_version_is_counted() {
+        // `number` compte les anciennes versions : 1 ancienne version de 15 octets.
+        let db = sample();
+        let c = db.entry(7, 22).unwrap().unwrap();
+        assert_eq!(
+            (c.nb_versions, c.versions_size, c.versioned_files),
+            (1, 15, 1)
+        );
+        assert_eq!(
+            c.scan(),
+            Some(ScanVersions {
+                count: 1,
+                size: 15,
+                file_size: 10
+            })
+        );
+    }
+
+    #[test]
+    fn scan_without_total_size_is_not_trusted() {
+        let mut db = sample();
+        let mut f = file(23, 1, "d.txt", false, 10, Some((2, 0)));
+        f.version.as_mut().unwrap().total_size = None;
+        db.replace_tree(7, &[f, file(24, 1, "e.txt", false, 5, None)], &[], 2)
+            .unwrap();
+        let d = db.entry(7, 23).unwrap().unwrap();
+        assert_eq!((d.nb_versions, d.versions_size), (2, 0));
+        assert_eq!((d.scan_versions, d.scan_versions_size), (Some(2), None));
+        assert_eq!(d.scan(), None);
+        let e = db.entry(7, 24).unwrap().unwrap();
+        assert_eq!((e.nb_versions, e.scan_versions, e.scan()), (0, None, None));
+    }
+
+    #[test]
+    fn old_cache_gets_scan_columns_and_is_rescanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE drives(id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                    size INTEGER NOT NULL DEFAULT 0, used_size INTEGER NOT NULL DEFAULT 0,
+                    scanned_at INTEGER, scan_warning TEXT);
+                 CREATE TABLE files(
+                    drive_id INTEGER NOT NULL, id INTEGER NOT NULL, parent_id INTEGER NOT NULL,
+                    name TEXT NOT NULL, path TEXT NOT NULL, is_dir INTEGER NOT NULL,
+                    size INTEGER NOT NULL, nb_versions INTEGER NOT NULL, versions_size INTEGER NOT NULL,
+                    versioned_files INTEGER NOT NULL, last_modified_at INTEGER NOT NULL,
+                    PRIMARY KEY(drive_id, id));
+                 INSERT INTO drives(id, name, scanned_at) VALUES (7, 'd', 5);
+                 INSERT INTO files VALUES (7, 22, 1, 'c.txt', '/c.txt', 0, 10, 1, 0, 0, 0);",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.drive(7).unwrap().unwrap().scanned_at, None);
+        let c = db.entry(7, 22).unwrap().unwrap();
+        assert_eq!((c.scan_versions, c.scan()), (None, None));
+        // Réouverture : la migration n'est pas rejouée.
+        drop(db);
+        let mut db = Db::open(&path).unwrap();
+        db.replace_tree(7, &[], &[], 9).unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.drive(7).unwrap().unwrap().scanned_at, Some(9));
     }
 
     #[test]
@@ -821,7 +939,7 @@ mod tests {
                 .iter()
                 .map(|e| e.id)
                 .collect::<Vec<_>>(),
-            vec![20, 21]
+            vec![20, 21, 22]
         );
         let sub = db.entry(7, 11).unwrap().unwrap();
         assert_eq!(db.versioned_descendants(7, &sub).unwrap().len(), 1);
@@ -836,8 +954,10 @@ mod tests {
             versions_size: 0,
             versioned_files: 0,
             last_modified_at: 0,
+            scan_versions: None,
+            scan_versions_size: None,
         };
-        assert_eq!(db.versioned_descendants(7, &root).unwrap().len(), 2);
+        assert_eq!(db.versioned_descendants(7, &root).unwrap().len(), 3);
         // Un dossier qui ne diffère que par la casse n'est pas un descendant.
         let mut docs = db.entry(7, 10).unwrap().unwrap();
         docs.path = "/docs".into();
@@ -873,7 +993,7 @@ mod tests {
         // Rescan où /Docs (10) n'a pas pu être listé : seule la racine est revue.
         let files = vec![
             file(10, 1, "Docs", true, 0, None),
-            file(22, 1, "c.txt", false, 10, Some((1, 10))),
+            file(22, 1, "c.txt", false, 10, Some((1, 25))),
         ];
         db.replace_tree(7, &files, &[failed(10, "/Docs (403)")], 2)
             .unwrap();
@@ -1084,50 +1204,64 @@ mod tests {
         writer.join().unwrap();
     }
 
+    fn ver(id: i64, size: i64) -> Version {
+        Version {
+            id,
+            size,
+            created_at: id,
+            keep_forever: false,
+        }
+    }
+
     #[test]
     fn version_cache_expiry_and_count_sync() {
         let mut db = sample();
-        // c.txt : le scan n'a vu qu'une version.
-        let vs = vec![
-            Version {
-                id: 1,
-                size: 4,
-                created_at: 1,
-                keep_forever: false,
-            },
-            Version {
-                id: 2,
-                size: 10,
-                created_at: 2,
-                keep_forever: false,
-            },
-        ];
+        // c.txt : le scan a vu 1 ancienne version de 15 octets, la liste concorde.
+        let vs = vec![ver(1, 15)];
         db.save_versions(7, 22, &vs, 100).unwrap();
         assert!(db.cached_versions(7, 22, 100).unwrap().is_some());
         assert!(db.cached_versions(7, 22, 101).unwrap().is_none());
         db.sync_version_count(7, 22, &vs).unwrap();
         let e = db.entry(7, 22).unwrap().unwrap();
+        assert_eq!((e.nb_versions, e.versions_size), (1, 15));
+        // Liste plus longue que le scan : la plus récente est supposée courante.
+        let vs = vec![ver(1, 4), ver(2, 15), ver(3, 10)];
+        db.sync_version_count(7, 22, &vs).unwrap();
+        let e = db.entry(7, 22).unwrap().unwrap();
         assert_eq!(
             (e.nb_versions, e.versions_size, e.versioned_files),
-            (2, 4, 1)
+            (2, 19, 1)
         );
+        // Les valeurs du scan ne bougent pas : elles servent de référence.
+        assert_eq!((e.scan_versions, e.scan_versions_size), (Some(1), Some(15)));
         // Une liste plus courte ne fait pas baisser le compte.
         db.sync_version_count(7, 22, &vs[..1]).unwrap();
         assert_eq!(db.entry(7, 22).unwrap().unwrap().nb_versions, 2);
-        // b.xlsx (Docs/Sub_dir) : 3 versions au lieu de 2, les parents suivent.
-        let vs: Vec<Version> = (1..=3)
-            .map(|i| Version {
-                id: i,
-                size: 50,
-                created_at: i,
-                keep_forever: false,
-            })
-            .collect();
+        // b.xlsx (Docs/Sub_dir) : 3 anciennes versions au lieu de 2, les parents suivent.
+        let vs: Vec<Version> = (1..=4).map(|i| ver(i, 50)).collect();
         db.sync_version_count(7, 21, &vs).unwrap();
-        assert_eq!(db.entry(7, 21).unwrap().unwrap().versions_size, 100);
-        assert_eq!(db.entry(7, 11).unwrap().unwrap().versions_size, 100);
+        assert_eq!(db.entry(7, 21).unwrap().unwrap().nb_versions, 3);
+        assert_eq!(db.entry(7, 21).unwrap().unwrap().versions_size, 150);
+        assert_eq!(db.entry(7, 11).unwrap().unwrap().versions_size, 150);
         let docs = db.entry(7, 10).unwrap().unwrap();
-        assert_eq!((docs.versions_size, docs.versioned_files), (400, 2));
+        assert_eq!((docs.versions_size, docs.versioned_files), (450, 2));
+    }
+
+    #[test]
+    fn count_sync_marks_unversioned_file_as_versioned() {
+        let mut db = sample();
+        db.replace_tree(7, &[file(24, 1, "e.txt", false, 5, None)], &[], 2)
+            .unwrap();
+        db.sync_version_count(7, 24, &[ver(1, 3), ver(2, 4)])
+            .unwrap();
+        let e = db.entry(7, 24).unwrap().unwrap();
+        assert_eq!(
+            (e.nb_versions, e.versions_size, e.versioned_files),
+            (1, 3, 1)
+        );
+        assert_eq!(db.stats(7).unwrap().versioned_files, 1);
+        // Un dossier ou un fichier inconnu est ignoré.
+        db.sync_version_count(7, 999, &[ver(1, 3)]).unwrap();
     }
 
     #[test]
@@ -1154,6 +1288,11 @@ mod tests {
         db.recompute_aggregates(7).unwrap();
         let e = db.entry(7, 20).unwrap().unwrap();
         assert_eq!((e.nb_versions, e.versions_size), (2, 200));
+        // La suppression est confirmée : la référence du scan suit.
+        assert_eq!(
+            (e.scan_versions, e.scan_versions_size),
+            (Some(2), Some(200))
+        );
         assert_eq!(db.entry(7, 10).unwrap().unwrap().versions_size, 270);
         db.forget_versions(7, 20).unwrap();
         assert!(db.cached_versions(7, 20, 0).unwrap().is_none());

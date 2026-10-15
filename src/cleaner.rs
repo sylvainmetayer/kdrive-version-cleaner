@@ -102,7 +102,14 @@ pub async fn prepare(
                 }
             };
             plan.files_checked += 1;
-            let selected = rules::select_versions(&versions, &rule, now);
+            // Référence du scan relue dans le cache, qu'une suppression a pu ajuster.
+            // Illisible : aucune référence, la plus récente reste protégée.
+            let scan = db
+                .entry(drive_id, entry.id)
+                .ok()
+                .flatten()
+                .and_then(|e| e.scan());
+            let selected = rules::select_versions(&versions, scan, &rule, now);
             if !selected.is_empty() {
                 plan.files_affected += 1;
             }

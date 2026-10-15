@@ -189,7 +189,7 @@ async fn load_versions_uses_cache_then_api() {
     let db_path = dir.path().join("cache.db");
     let mut db = seed(&db_path);
     let server = MockServer::start().await;
-    // a.txt : le scan ne voyait qu'une version, l'API en renvoie 3.
+    // a.txt : le scan ne voyait aucune ancienne version, l'API en renvoie 3.
     mock_versions(
         &server,
         21,
@@ -206,10 +206,123 @@ async fn load_versions_uses_cache_then_api() {
         .unwrap();
     assert_eq!(v.len(), 3);
     let e = db.entry(DRIVE, 21).unwrap().unwrap();
-    assert_eq!((e.nb_versions, e.versions_size), (3, 12));
+    // Liste sans référence de scan : la plus récente est supposée courante.
+    assert_eq!((e.nb_versions, e.versions_size), (2, 12));
     // Deuxième appel : servi par le cache (une seule requête au total).
     cleaner::load_versions(&c, &mut db, DRIVE, 21)
         .await
         .unwrap();
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+async fn prepare_plan(
+    db_path: &std::path::Path,
+    server: &MockServer,
+    file_id: i64,
+    rule: Rule,
+) -> Plan {
+    let db = kdvc::db::Db::open(db_path).unwrap();
+    let (tx, mut rx) = unbounded_channel();
+    cleaner::prepare(
+        client(server),
+        db_path.to_path_buf(),
+        DRIVE,
+        vec![db.entry(DRIVE, file_id).unwrap().unwrap()],
+        rule,
+        tx,
+        no_cancel(),
+    )
+    .await;
+    wait_prepare(&mut rx).await.unwrap()
+}
+
+#[tokio::test]
+async fn list_matching_scan_has_only_old_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    // notes.md : le scan annonce 2 anciennes versions pour 100 octets, la liste
+    // concorde. La version courante n'y figure pas : rien n'est protégé d'office.
+    let now = kdvc::now();
+    mock_versions(
+        &server,
+        30,
+        serde_json::json!([
+            {"id": 31, "size": 60, "created_at": now - DAY, "keep_forever": false},
+            {"id": 30, "size": 40, "created_at": now - 50 * DAY, "keep_forever": false},
+        ]),
+    )
+    .await;
+
+    // La courante (hors liste) occupe la première des 2 places : seule la 30 part.
+    let plan = prepare_plan(&db_path, &server, 30, Rule::KeepLast(2)).await;
+    let ids: Vec<i64> = plan.items.iter().map(|i| i.version_id).collect();
+    assert_eq!(ids, vec![30]);
+
+    let plan = prepare_plan(&db_path, &server, 30, Rule::AllButCurrent).await;
+    let ids: Vec<i64> = plan.items.iter().map(|i| i.version_id).collect();
+    assert_eq!(ids, vec![31, 30]);
+    assert_eq!(plan.total_size, 100);
+
+    // On supprime d'abord la seule 31 : la référence du scan suit la suppression.
+    let mut first = plan.clone();
+    first.items.truncate(1);
+    mock_delete(&server, 30, 31, 200).await;
+    let (tx, mut rx) = unbounded_channel();
+    cleaner::execute(
+        client(&server),
+        db_path.clone(),
+        DRIVE,
+        first,
+        tx,
+        no_cancel(),
+    )
+    .await;
+    assert_eq!(wait_exec(&mut rx).await.deleted, 1);
+    let e = kdvc::db::Db::open(&db_path)
+        .unwrap()
+        .entry(DRIVE, 30)
+        .unwrap()
+        .unwrap();
+    assert_eq!((e.nb_versions, e.versions_size), (1, 40));
+    assert_eq!((e.scan_versions, e.scan_versions_size), (Some(1), Some(40)));
+
+    // Liste en cache (sans la 31) toujours conforme : la 30 reste supprimable.
+    let plan = prepare_plan(&db_path, &server, 30, Rule::AllButCurrent).await;
+    let ids: Vec<i64> = plan.items.iter().map(|i| i.version_id).collect();
+    assert_eq!(ids, vec![30]);
+    // Une seule requête GET /versions : le reste vient du cache.
+    let gets = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "GET")
+        .count();
+    assert_eq!(gets, 1);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn list_not_matching_scan_protects_newest() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    // Une version de plus que le scan : la plus récente peut être la courante.
+    let now = kdvc::now();
+    mock_versions(
+        &server,
+        30,
+        serde_json::json!([
+            {"id": 32, "size": 100, "created_at": now, "keep_forever": false},
+            {"id": 31, "size": 60, "created_at": now - DAY, "keep_forever": false},
+            {"id": 30, "size": 40, "created_at": now - 50 * DAY, "keep_forever": false},
+        ]),
+    )
+    .await;
+    let plan = prepare_plan(&db_path, &server, 30, Rule::Manual([32, 31].into())).await;
+    let ids: Vec<i64> = plan.items.iter().map(|i| i.version_id).collect();
+    assert_eq!(ids, vec![31]);
 }

@@ -48,7 +48,7 @@ Les tâches longues (scan, chargement des versions, aperçu, suppressions) tourn
 
 ## Invariants de sécurité (à ne jamais casser)
 
-1. **La version courante n'est jamais supprimée.** La plus récente de la liste `/versions` (`rules::current_version_id`) est toujours protégée, car on ne sait pas de façon fiable si l'API inclut la version courante dans cette liste.
+1. **La version courante n'est jamais supprimée.** `/versions` ne renvoie que les anciennes versions, mais on ne s'y fie que si la liste correspond exactement au scan : même nombre que `version.number` et même taille cumulée que `total_size - size` (colonnes `scan_versions` / `scan_versions_size`, ajustées seulement par nos suppressions réussies), avec un fichier courant non vide. Sinon (scan absent, périmé ou incohérent), la plus récente de la liste est protégée (`rules::current_version_id`).
 2. **Les versions `keep_forever` ne sont jamais supprimées.** Si le champ manque dans la réponse, la version est considérée comme protégée.
 3. **Toute suppression passe par un aperçu**, puis par une confirmation où l'utilisateur tape `oui` (`Overlay::Preview` puis `Overlay::Confirm`). Aucun chemin de code ne doit appeler `cleaner::execute` sans un `Plan` validé.
 4. Les suppressions se font **version par version** (`DELETE /2/drive/{d}/files/{f}/versions/{v}`). L'endpoint de suppression en masse n'est pas utilisé.
@@ -69,7 +69,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
   - par **page** (`page` / `pages`).
 
   Un `has_more` sans curseur, ou un curseur déjà vu, déclenche une erreur. Il ne faut jamais tronquer une liste en silence, ni boucler.
-- Champ `version` d'un fichier (avec `with=version`) : `number`, `total_size` et `keep_forever`. L'espace des anciennes versions vaut `total_size - size`.
+- Champ `version` d'un fichier (avec `with=version`) : `number`, `total_size` et `keep_forever`. `number` compte les **anciennes** versions seulement (un fichier modifié une fois a `number = 1`), et l'espace des anciennes versions vaut `total_size - size`. `nb_versions` dans le cache suit la même convention.
 
 ## Cache SQLite
 

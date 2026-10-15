@@ -218,7 +218,7 @@ pub struct SearchForm {
 }
 
 impl SearchForm {
-    pub const LABELS: [&str; 4] = ["Nom", "Extension", "Taille min. (Mo)", "Versions min."];
+    pub const LABELS: [&str; 4] = ["Nom", "Extension", "Taille min. (Mo)", "Anc. versions min."];
 
     fn filter(&self) -> SearchFilter {
         SearchFilter {
@@ -231,7 +231,7 @@ impl SearchForm {
                 .unwrap_or(0.0)
                 * 1024.0
                 * 1024.0) as i64,
-            min_versions: self.fields[3].trim().parse().unwrap_or(2),
+            min_versions: self.fields[3].trim().parse().unwrap_or(1),
         }
     }
 }
@@ -282,6 +282,8 @@ fn root_entry() -> Entry {
         versions_size: 0,
         versioned_files: 0,
         last_modified_at: 0,
+        scan_versions: None,
+        scan_versions_size: None,
     }
 }
 
@@ -336,7 +338,7 @@ impl App {
             top: Vec::new(),
             top_state: TableState::default(),
             search: SearchForm {
-                fields: [String::new(), String::new(), String::new(), "2".into()],
+                fields: [String::new(), String::new(), String::new(), "1".into()],
                 focus: 0,
                 editing: false,
                 applied: None,
@@ -499,7 +501,6 @@ impl App {
                     match result {
                         Ok(mut versions) => {
                             rules::sort_newest_first(&mut versions);
-                            view.current_id = rules::current_version_id(&versions);
                             // Le chargement a pu réaligner le compte et le poids du fichier.
                             let drive_id = self.drive.as_ref().map(|d| d.id);
                             // Une erreur de lecture ne doit pas empêcher l'affichage des versions.
@@ -510,6 +511,8 @@ impl App {
                                     || entry.versions_size != view.entry.versions_size;
                                 view.entry = entry;
                             }
+                            view.current_id =
+                                rules::current_version_id(&versions, view.entry.scan());
                             clamp(&mut view.state, versions.len());
                             view.versions = Some(versions);
                         }
@@ -965,11 +968,11 @@ impl App {
             ),
             Tab::Search => (
                 format!("les {} résultats de recherche", self.search_results.len()),
-                // « Versions min. » peut être inférieur à 2 : on évite une requête
+                // « Anc. versions min. » peut valoir 0 : on évite une requête
                 // par fichier sans ancienne version connue.
                 self.search_results
                     .iter()
-                    .filter(|e| e.nb_versions > 1)
+                    .filter(|e| e.nb_versions > 0)
                     .cloned()
                     .collect(),
             ),

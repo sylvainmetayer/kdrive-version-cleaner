@@ -42,7 +42,8 @@ fn file(id: i64, parent: i64, name: &str, size: i64, versions: Option<(i64, i64)
     }
 }
 
-/// Arborescence : /Docs/budget.xlsx (5 versions), /Docs/a.txt (1 version), /notes.md (2 versions).
+/// Arborescence (`number` = anciennes versions) : /Docs/budget.xlsx (5 anciennes,
+/// 4000 octets), /Docs/a.txt (aucune), /notes.md (2 anciennes, 100 octets).
 pub fn seed(db_path: &Path) -> Db {
     let mut db = Db::open(db_path).unwrap();
     db.upsert_drives(&[Drive {
@@ -55,14 +56,15 @@ pub fn seed(db_path: &Path) -> Db {
     let files = vec![
         file(10, 1, "Docs", 0, None),
         file(20, 10, "budget.xlsx", 1000, Some((5, 5000))),
-        file(21, 10, "a.txt", 10, Some((1, 10))),
+        file(21, 10, "a.txt", 10, None),
         file(30, 1, "notes.md", 100, Some((2, 200))),
     ];
     db.replace_tree(DRIVE, &files, &[], kdvc::now()).unwrap();
     db
 }
 
-/// Versions de budget.xlsx : 5 (courante) … 1 (la plus ancienne), la 2 « conservée pour toujours ».
+/// Versions de budget.xlsx : 5 (la plus récente) … 1 (la plus ancienne), la 2 « conservée
+/// pour toujours ». La somme (5000) ne correspond pas au scan (4000) : la 5 est protégée.
 pub fn budget_versions() -> serde_json::Value {
     let now = kdvc::now();
     json!([
