@@ -21,7 +21,7 @@
       "groupName": "dépendances (mineures)"
     },
     {
-      "description": "La version de dtolnay/rust-toolchain encode la toolchain (stable, MSRV 1.88) : ne pas la changer",
+      "description": "La version de dtolnay/rust-toolchain encode la toolchain (stable, MSRV 1.89) : ne pas la changer",
       "matchPackageNames": ["dtolnay/rust-toolchain"],
       "matchUpdateTypes": ["major", "minor", "patch"],
       "enabled": false

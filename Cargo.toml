@@ -2,7 +2,7 @@
 name = "kdvc"
 version = "0.1.6"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 description = "TUI pour visualiser et nettoyer les anciennes versions des fichiers d'un kDrive Infomaniak"
 repository = "https://github.com/sylvainmetayer/kdrive-version-cleaner"

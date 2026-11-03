@@ -13,7 +13,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sylvainmetayer/kdrive-version-cleaner/badge)](https://scorecard.dev/viewer/?uri=github.com/sylvainmetayer/kdrive-version-cleaner)
 
 [![Licence MIT](https://img.shields.io/github/license/sylvainmetayer/kdrive-version-cleaner)](LICENSE)
-[![MSRV](https://img.shields.io/badge/rustc-1.88+-orange?logo=rust)](https://blog.rust-lang.org/)
+[![MSRV](https://img.shields.io/badge/rustc-1.89+-orange?logo=rust)](https://blog.rust-lang.org/)
 [![Built With Ratatui](https://img.shields.io/badge/Built_With_Ratatui-000?logo=ratatui&logoColor=fff)](https://ratatui.rs/)
 [![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://github.com/sylvainmetayer/kdrive-version-cleaner/issues?q=is%3Apr+author%3Aapp%2Frenovate)
 
@@ -53,7 +53,7 @@ tar xzf kdvc-*.tar.gz && install kdvc-*/kdvc ~/.local/bin/
 
 ### Depuis les sources
 
-Il faut Rust ≥ 1.88 :
+Il faut Rust ≥ 1.89 :
 
 ```sh
 cargo install --git https://github.com/sylvainmetayer/kdrive-version-cleaner
@@ -119,7 +119,7 @@ cargo deny check   # failles, licences et sources des dépendances
 
 | Workflow | Déclencheur | Rôle |
 |---|---|---|
-| `ci.yml` | push, PR | fmt, clippy, tests Linux/macOS/Windows, MSRV 1.88, build release |
+| `ci.yml` | push, PR | fmt, clippy, tests Linux/macOS/Windows, MSRV 1.89, build release |
 | `quality.yml` | push, PR, hebdo | cargo-deny, couverture (cargo-llvm-cov → Codecov), SonarQube Cloud |
 | `codeql.yml` | push, PR, hebdo | analyse CodeQL du code Rust et des workflows |
 | `scorecard.yml` | push, hebdo | OpenSSF Scorecard |
