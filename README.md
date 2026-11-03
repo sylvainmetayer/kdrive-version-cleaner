@@ -56,7 +56,7 @@ tar xzf kdvc-*.tar.gz && install kdvc-*/kdvc ~/.local/bin/
 Il faut Rust ≥ 1.89 :
 
 ```sh
-cargo install --git https://github.com/sylvainmetayer/kdrive-version-cleaner
+cargo install --locked --git https://github.com/sylvainmetayer/kdrive-version-cleaner
 ```
 
 ## Token API
@@ -119,7 +119,7 @@ cargo deny check   # failles, licences et sources des dépendances
 
 | Workflow | Déclencheur | Rôle |
 |---|---|---|
-| `ci.yml` | push, PR | fmt, clippy, tests Linux/macOS/Windows, MSRV 1.89, build release |
+| `ci.yml` | push, PR | fmt, clippy, tests Linux/macOS/Windows, MSRV, build release |
 | `quality.yml` | push, PR, hebdo | cargo-deny, couverture (cargo-llvm-cov → Codecov), SonarQube Cloud |
 | `codeql.yml` | push, PR, hebdo | analyse CodeQL du code Rust et des workflows |
 | `scorecard.yml` | push, hebdo | OpenSSF Scorecard |

@@ -6,7 +6,7 @@ Guide pour les agents de code (Claude Code, Codex, Copilot…) travaillant sur c
 
 `kdvc` est une TUI Rust (ratatui) qui affiche l'espace occupé par les anciennes versions des fichiers d'un kDrive Infomaniak et permet de les supprimer en sécurité. Le binaire est mono-utilisateur et local. Il n'a pas de serveur et ne parle qu'à l'API Infomaniak.
 
-- Rust **edition 2024**, **MSRV 1.89** (`rust-version` dans `Cargo.toml`, vérifiée en CI). Pas de fonctionnalité plus récente sans relever la MSRV partout : `Cargo.toml`, `ci.yml`, le badge du README et ce fichier.
+- Rust **edition 2024**, **MSRV 1.89** (`rust-version` dans `Cargo.toml`, vérifiée en CI). Pas de fonctionnalité plus récente sans relever la MSRV partout : `Cargo.toml`, le job MSRV de `ci.yml` (empreinte et commentaire), le badge et les prérequis du README et ce fichier.
 - Langue : l'interface, les messages d'erreur, les commentaires et les commits sont **en français**.
 
 ## Commandes
