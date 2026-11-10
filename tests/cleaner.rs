@@ -401,7 +401,8 @@ fn notes_plan() -> Plan {
 }
 
 fn notes_versions(ids: &[i64]) -> serde_json::Value {
-    let all = [(31, 60), (30, 40)];
+    // La 32 n'existe pas au scan : version ajoutée depuis.
+    let all = [(32, 100), (31, 60), (30, 40)];
     let v: Vec<_> = all
         .iter()
         .filter(|(id, _)| ids.contains(id))
@@ -526,9 +527,9 @@ async fn incoherent_list_never_confirms_a_deletion() {
     let db_path = dir.path().join("cache.db");
     seed(&db_path);
     let server = MockServer::start().await;
-    // La 30 manque, mais la 31 aussi : liste vide ou tronquée, rien n'est prouvé.
+    // La 30 manque, mais la 31 aussi (une autre à sa place) : rien n'est prouvé.
     mock_delete(&server, 30, 30, 500).await;
-    mock_versions(&server, 30, notes_versions(&[])).await;
+    mock_versions(&server, 30, notes_versions(&[32])).await;
 
     let (summary, log, deletes) = run_plan(&db_path, &server, notes_plan()).await;
     assert_eq!((summary.deleted, summary.failed, deletes), (0, 1, 1));
@@ -678,5 +679,244 @@ async fn interleaved_failures_count_each_file_once() {
     let (summary, _, deletes) = run_plan(&db_path, &server, plan).await;
     assert_eq!((summary.deleted, summary.failed, deletes), (1, 6, 7));
     assert_eq!(summary.stopped, None);
+    server.verify().await;
+}
+
+/// Relecture des versions servie une seule fois (les suivantes passent au mock suivant).
+async fn mock_versions_once(server: &MockServer, file_id: i64, body: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path(format!("/3/drive/{DRIVE}/files/{file_id}/versions")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+}
+
+/// Nombre de requêtes GET reçues (relectures).
+async fn gets(server: &MockServer) -> usize {
+    let all = server.received_requests().await.unwrap();
+    all.iter().filter(|r| r.method.as_str() == "GET").count()
+}
+
+/// notes.md : la 30 (40 octets) part, puis la 31 (60 octets), qui était la dernière
+/// ancienne version : après sa suppression, la liste attendue est vide.
+fn notes_both_plan() -> Plan {
+    let mut plan = notes_plan();
+    let mut last = plan.items[0].clone();
+    (last.version_id, last.size) = (31, 60);
+    plan.items.push(last);
+    plan
+}
+
+async fn last_version_reread_as(body: serde_json::Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 200).await;
+    mock_delete(&server, 30, 31, 500).await;
+    mock_versions_once(&server, 30, body).await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, notes_both_plan()).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (1, 1, 2));
+    let last = log.iter().find(|e| e.version_id == 31).unwrap();
+    let note = last.error.as_deref().unwrap();
+    assert!(!last.ok && note.contains("issue inconnue"), "{note}");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn reread_without_data_never_confirms_the_last_version() {
+    last_version_reread_as(serde_json::json!({"result": "success", "page": 1, "pages": 1})).await;
+}
+
+#[tokio::test]
+async fn empty_reread_never_confirms_the_last_version() {
+    // Liste vide : suppression réelle, ou fichier mis à la corbeille ? Rien n'est prouvé.
+    last_version_reread_as(
+        serde_json::json!({"result": "success", "data": [], "page": 1, "pages": 1}),
+    )
+    .await;
+}
+
+/// budget.xlsx avec 5 anciennes versions de 800 octets (scan : 5, 4000 octets).
+fn budget_list(ids: std::ops::RangeInclusive<i64>) -> serde_json::Value {
+    let v: Vec<_> = ids
+        .map(|id| {
+            serde_json::json!({"id": id, "size": 800, "created_at": kdvc::now() - id * DAY,
+                "keep_forever": false})
+        })
+        .collect();
+    serde_json::json!({"result": "success", "data": v, "page": 1, "pages": 1})
+}
+
+fn budget_plan_800(ids: std::ops::RangeInclusive<i64>) -> Plan {
+    let mut plan = budget_plan(ids);
+    for item in &mut plan.items {
+        item.size = 800;
+    }
+    plan
+}
+
+#[tokio::test]
+async fn second_version_of_a_file_confirmed_by_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 20, 1, 200).await;
+    mock_delete(&server, 20, 2, 500).await;
+    mock_versions_once(&server, 20, budget_list(3..=5)).await;
+
+    let (summary, _, deletes) = run_plan(&db_path, &server, budget_plan_800(1..=2)).await;
+    assert_eq!(
+        (summary.deleted, summary.failed, summary.freed, deletes),
+        (2, 0, 1600, 2)
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn two_ambiguous_deletes_on_the_same_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 20, 1, 500).await;
+    mock_delete(&server, 20, 2, 500).await;
+    mock_versions_once(&server, 20, budget_list(2..=5)).await;
+    mock_versions_once(&server, 20, budget_list(3..=5)).await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, budget_plan_800(1..=2)).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (2, 0, 2));
+    assert!(log.iter().all(|e| e.ok));
+    assert_eq!(gets(&server).await, 2);
+    let e = kdvc::db::Db::open(&db_path)
+        .unwrap()
+        .entry(DRIVE, 20)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (e.scan_versions, e.scan_versions_size),
+        (Some(3), Some(2400))
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn version_added_since_scan_is_not_proof() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 500).await;
+    mock_versions(&server, 30, notes_versions(&[32, 31])).await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, notes_plan()).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (0, 1, 1));
+    let note = log[0].error.as_deref().unwrap();
+    assert!(note.contains("incohérente"), "{note}");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn not_found_is_a_plain_failure_without_reread() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 404).await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, notes_plan()).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (0, 1, 1));
+    assert!(!log[0].ok);
+    assert_eq!(gets(&server).await, 0);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn reread_is_tried_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 500).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/3/drive/{DRIVE}/files/30/versions")))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    // Une relecture rejouée attendrait 5 s avant son second essai.
+    let run = run_plan(&db_path, &server, notes_plan());
+    let (summary, log, _) = tokio::time::timeout(Duration::from_secs(3), run)
+        .await
+        .expect("relecture rejouée");
+    assert_eq!((summary.deleted, summary.failed), (0, 1));
+    assert!(log[0].error.as_deref().unwrap().contains("issue inconnue"));
+    assert_eq!(gets(&server).await, 1);
+}
+
+#[tokio::test]
+async fn unauthorized_reread_stops_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 500).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/3/drive/{DRIVE}/files/30/versions")))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "result": "error", "error": {"code": "not_authorized"}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut plan = notes_plan();
+    plan.items.extend(plan_of([(41, 1)]).items);
+    let (summary, _, deletes) = run_plan(&db_path, &server, plan).await;
+    assert_eq!((summary.failed, deletes), (1, 1));
+    let stopped = summary.stopped.unwrap();
+    assert!(stopped.contains("HTTP 401"), "{stopped}");
+    server.verify().await;
+}
+
+/// Répond au DELETE par une 500 après avoir demandé l'annulation, comme un Ctrl+C
+/// reçu pendant la requête.
+struct CancelThenFail(Arc<AtomicBool>);
+
+impl wiremock::Respond for CancelThenFail {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        ResponseTemplate::new(500)
+    }
+}
+
+#[tokio::test]
+async fn cancel_skips_the_reread_but_logs_the_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    let cancel = no_cancel();
+    Mock::given(method("DELETE"))
+        .respond_with(CancelThenFail(cancel.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mock_versions(&server, 30, notes_versions(&[31])).await;
+
+    let mut plan = notes_plan();
+    plan.items.extend(plan_of([(41, 1)]).items);
+    let (tx, mut rx) = unbounded_channel();
+    cleaner::execute(client(&server), db_path.clone(), DRIVE, plan, tx, cancel).await;
+    let summary = wait_exec(&mut rx).await;
+    assert!(summary.cancelled);
+    assert_eq!((summary.deleted, summary.failed), (0, 1));
+    assert_eq!(gets(&server).await, 0);
+    let log = kdvc::db::Db::open(&db_path).unwrap().log(DRIVE).unwrap();
+    assert_eq!(log.len(), 1);
+    let note = log[0].error.as_deref().unwrap();
+    assert!(note.contains("relecture annulée"), "{note}");
     server.verify().await;
 }

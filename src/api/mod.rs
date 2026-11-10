@@ -80,6 +80,17 @@ impl std::fmt::Display for HttpError {
     }
 }
 
+/// Erreurs après lesquelles une requête est réessayée.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// Lecture : connexion refusée, timeout, 5xx et 429.
+    All,
+    /// Requête peut-être appliquée (DELETE) : connexion refusée et 429 seulement.
+    Unsent,
+    /// Un seul essai, hormis l'attente sur 429.
+    RateLimitOnly,
+}
+
 pub struct CursorPage<T> {
     pub items: Vec<T>,
     pub cursor: Option<String>,
@@ -132,11 +143,25 @@ impl Client {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<Envelope<T>> {
-        let url = format!("{}{}", self.base, path);
         // Un DELETE peut avoir été traité malgré un timeout ou une 5xx : le rejouer
         // échouerait (version déjà supprimée) et fausserait journal et bilan.
         // On ne rejoue alors que les cas où la requête n'a sûrement pas été traitée.
-        let idempotent = method == Method::GET;
+        let retry = if method == Method::GET {
+            Retry::All
+        } else {
+            Retry::Unsent
+        };
+        self.request_with(method, path, query, retry).await
+    }
+
+    async fn request_with<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        retry: Retry,
+    ) -> Result<Envelope<T>> {
+        let url = format!("{}{}", self.base, path);
         let mut attempt = 0;
         loop {
             attempt += 1;
@@ -153,7 +178,8 @@ impl Client {
                 Ok(r) => r,
                 Err(e)
                     if attempt < MAX_ATTEMPTS
-                        && (e.is_connect() || (idempotent && e.is_timeout())) =>
+                        && ((e.is_connect() && retry != Retry::RateLimitOnly)
+                            || (retry == Retry::All && e.is_timeout())) =>
                 {
                     sleep(backoff(attempt)).await;
                     continue;
@@ -162,7 +188,8 @@ impl Client {
             };
 
             let status = resp.status();
-            if (status == StatusCode::TOO_MANY_REQUESTS || (idempotent && status.is_server_error()))
+            if (status == StatusCode::TOO_MANY_REQUESTS
+                || (retry == Retry::All && status.is_server_error()))
                 && attempt < MAX_ATTEMPTS
             {
                 let wait = resp
@@ -284,6 +311,16 @@ impl Client {
     }
 
     pub async fn list_versions(&self, drive_id: i64, file_id: i64) -> Result<Vec<Version>> {
+        self.versions(drive_id, file_id, Retry::All).await
+    }
+
+    /// Comme `list_versions`, en un seul essai par page (hormis l'attente sur 429) :
+    /// relecture de vérification après un DELETE, qui ne doit pas allonger un lot en panne.
+    pub async fn check_versions(&self, drive_id: i64, file_id: i64) -> Result<Vec<Version>> {
+        self.versions(drive_id, file_id, Retry::RateLimitOnly).await
+    }
+
+    async fn versions(&self, drive_id: i64, file_id: i64, retry: Retry) -> Result<Vec<Version>> {
         // Accepte les deux paginations de l'API : par page (`pages`) et par curseur
         // (`cursor` / `has_more`, propre à la v3). Ignorer l'une tronquerait la liste.
         let mut versions = Vec::new();
@@ -300,15 +337,14 @@ impl Client {
                 Some(c) => query.push(("cursor", c.clone())),
                 None => query.push(("page", page.to_string())),
             }
-            let env: Envelope<Vec<Version>> = self
-                .request(
-                    Method::GET,
-                    &format!("/3/drive/{drive_id}/files/{file_id}/versions"),
-                    &query,
-                )
-                .await?;
-            versions.extend(env.data.unwrap_or_default());
             let path = format!("/3/drive/{drive_id}/files/{file_id}/versions");
+            let env: Envelope<Vec<Version>> =
+                self.request_with(Method::GET, &path, &query, retry).await?;
+            // Une réponse sans `data` ne dit rien : elle ne vaut pas une liste vide.
+            let Some(data) = env.data else {
+                bail!("{path} : réponse sans données, liste inconnue")
+            };
+            versions.extend(data);
             if env.has_more == Some(true) {
                 match env.cursor {
                     // Un curseur déjà vu (même plus tôt qu'à la page précédente) bouclerait.

@@ -263,3 +263,17 @@ async fn versions_cursor_cycle_is_an_error() {
     let err = client(&server).await.list_versions(7, 2).await.unwrap_err();
     assert!(err.to_string().contains("curseur répété"), "{err}");
 }
+
+#[tokio::test]
+async fn versions_without_data_is_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/3/drive/7/files/2/versions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "success", "page": 1, "pages": 1
+        })))
+        .mount(&server)
+        .await;
+    let err = client(&server).await.list_versions(7, 2).await.unwrap_err();
+    assert!(err.to_string().contains("sans données"), "{err}");
+}
