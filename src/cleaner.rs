@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use reqwest::StatusCode;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -138,6 +138,42 @@ pub async fn prepare(
     let _ = tx.send(AppEvent::PrepareDone(result.map_err(|e| format!("{e:#}"))));
 }
 
+/// Vrai si le serveur a pu appliquer la requête malgré l'erreur : timeout, erreur
+/// réseau, 5xx ou réponse illisible. Un 4xx (404 compris) est une réponse nette.
+fn ambiguous(e: &anyhow::Error) -> bool {
+    match e.downcast_ref::<HttpError>() {
+        Some(h) => !h.status.is_client_error(),
+        None => e.downcast_ref::<reqwest::Error>().is_some(),
+    }
+}
+
+/// Après un DELETE à l'issue inconnue : la version a-t-elle disparu de la liste ?
+///
+/// Une version présente (par son id) est un échec. Son absence ne prouve la
+/// suppression que si la liste correspond exactement au scan moins cette version,
+/// comme pour l'invariant de la version courante : une liste vide ou tronquée ne
+/// doit pas faire conclure à tort. Sinon, l'issue reste inconnue (erreur).
+async fn deleted_on_server(
+    client: &Client,
+    drive_id: i64,
+    item: &PlannedDeletion,
+    scan: Option<rules::ScanVersions>,
+) -> Result<bool> {
+    let versions = client.list_versions(drive_id, item.file_id).await?;
+    if versions.iter().any(|v| v.id == item.version_id) {
+        return Ok(false);
+    }
+    let expected = scan.map(|s| rules::ScanVersions {
+        count: s.count - 1,
+        size: s.size - item.size,
+        ..s
+    });
+    if !rules::matches_scan(&versions, expected) {
+        bail!("version absente, mais liste incohérente avec le scan");
+    }
+    Ok(true)
+}
+
 /// Supprime les versions d'un plan validé, en journalisant chaque suppression.
 pub async fn execute(
     client: Client,
@@ -165,10 +201,36 @@ pub async fn execute(
             summary.cancelled = true;
             break;
         }
-        let res = client
+        let mut res = client
             .delete_version(drive_id, item.file_id, item.version_id)
             .await;
-        let error = res.as_ref().err().map(|e| format!("{e:#}"));
+        let mut error = res.as_ref().err().map(|e| format!("{e:#}"));
+        // Issue inconnue : on relit la liste des versions, sans jamais rejouer le DELETE.
+        if let Err(e) = &res
+            && ambiguous(e)
+        {
+            // Référence du scan lue avant la relecture (illisible : rien n'est prouvé).
+            let scan = db
+                .entry(drive_id, item.file_id)
+                .ok()
+                .flatten()
+                .and_then(|e| e.scan());
+            let (deleted, verdict) = match deleted_on_server(&client, drive_id, item, scan).await {
+                Ok(true) => (
+                    true,
+                    "suppression confirmée par relecture des versions".into(),
+                ),
+                Ok(false) => (false, "version toujours présente à la relecture".into()),
+                Err(v) => (
+                    false,
+                    format!("issue inconnue, relecture impossible : {v:#}"),
+                ),
+            };
+            error = Some(format!("{e:#} ; {verdict}"));
+            if deleted {
+                res = Ok(());
+            }
+        }
         // Token expiré ou révoqué : les suppressions suivantes échoueraient aussi.
         // Un 403 peut ne viser qu'un fichier : c'est un échec ordinaire, compté par fichier.
         let unauthorized = res
@@ -190,7 +252,7 @@ pub async fn execute(
         if let Err(e) = logged {
             summary.errors.push(format!("journal : {e:#}"));
         }
-        match error {
+        match error.filter(|_| res.is_err()) {
             None => {
                 failed_files.clear();
                 summary.deleted += 1;

@@ -2,13 +2,15 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use common::*;
 use kdvc::cleaner::{self, ExecSummary, Plan};
 use kdvc::events::AppEvent;
 use kdvc::rules::Rule;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-use wiremock::MockServer;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn wait_prepare(rx: &mut UnboundedReceiver<AppEvent>) -> Result<Plan, String> {
     while let Some(ev) = rx.recv().await {
@@ -369,8 +371,192 @@ async fn run_plan(
     .await;
     let summary = wait_exec(&mut rx).await;
     let log = kdvc::db::Db::open(db_path).unwrap().log(DRIVE).unwrap();
-    let deletes = server.received_requests().await.unwrap().len();
-    (summary, log, deletes)
+    (summary, log, deletes(server).await)
+}
+
+/// Nombre de requêtes DELETE reçues (les relectures de vérification sont des GET).
+async fn deletes(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "DELETE")
+        .count()
+}
+
+/// notes.md (scan : 2 anciennes versions, 100 octets) : suppression de la 30 (40 octets).
+/// Après suppression, la liste attendue ne contient plus que la 31 (60 octets).
+fn notes_plan() -> Plan {
+    Plan {
+        items: vec![kdvc::cleaner::PlannedDeletion {
+            file_id: 30,
+            path: "/notes.md".into(),
+            version_id: 30,
+            created_at: 0,
+            size: 40,
+        }],
+        ..Default::default()
+    }
+}
+
+fn notes_versions(ids: &[i64]) -> serde_json::Value {
+    let all = [(31, 60), (30, 40)];
+    let v: Vec<_> = all
+        .iter()
+        .filter(|(id, _)| ids.contains(id))
+        .map(|(id, size)| {
+            serde_json::json!({"id": id, "size": size, "created_at": kdvc::now() - DAY,
+                "keep_forever": false})
+        })
+        .collect();
+    serde_json::json!(v)
+}
+
+#[tokio::test]
+async fn ambiguous_delete_confirmed_by_reading_counts_as_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 500).await;
+    mock_versions(&server, 30, notes_versions(&[31])).await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, notes_plan()).await;
+    assert_eq!(
+        (summary.deleted, summary.failed, summary.freed, deletes),
+        (1, 0, 40, 1)
+    );
+    assert!(log[0].ok);
+    let note = log[0].error.as_deref().unwrap();
+    assert!(
+        note.contains("HTTP 500") && note.contains("confirmée"),
+        "{note}"
+    );
+    // Le cache suit la suppression, comme pour un succès direct.
+    let e = kdvc::db::Db::open(&db_path)
+        .unwrap()
+        .entry(DRIVE, 30)
+        .unwrap()
+        .unwrap();
+    assert_eq!((e.nb_versions, e.scan_versions), (1, Some(1)));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn ambiguous_delete_still_listed_is_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 500).await;
+    mock_versions(&server, 30, notes_versions(&[31, 30])).await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, notes_plan()).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (0, 1, 1));
+    let note = log[0].error.as_deref().unwrap();
+    assert!(!log[0].ok && note.contains("toujours présente"), "{note}");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn timed_out_delete_confirmed_by_reading_counts_as_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("/2/drive/{DRIVE}/files/30/versions/30")))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mock_versions(&server, 30, notes_versions(&[31])).await;
+
+    let client = kdvc::api::Client::with_timeout(
+        "tok".into(),
+        server.uri(),
+        Duration::ZERO,
+        Duration::from_millis(500),
+    )
+    .unwrap();
+    let (tx, mut rx) = unbounded_channel();
+    cleaner::execute(
+        client,
+        db_path.clone(),
+        DRIVE,
+        notes_plan(),
+        tx,
+        no_cancel(),
+    )
+    .await;
+    let summary = wait_exec(&mut rx).await;
+    assert_eq!((summary.deleted, summary.failed), (1, 0));
+    assert_eq!(deletes(&server).await, 1);
+    let log = kdvc::db::Db::open(&db_path).unwrap().log(DRIVE).unwrap();
+    assert!(log[0].ok, "{:?}", log[0].error);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn failed_verification_keeps_the_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    mock_delete(&server, 30, 30, 500).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/3/drive/{DRIVE}/files/30/versions")))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "result": "error", "error": {"code": "forbidden"}
+        })))
+        .mount(&server)
+        .await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, notes_plan()).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (0, 1, 1));
+    let note = log[0].error.as_deref().unwrap();
+    assert!(!log[0].ok && note.contains("issue inconnue"), "{note}");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn incoherent_list_never_confirms_a_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    // La 30 manque, mais la 31 aussi : liste vide ou tronquée, rien n'est prouvé.
+    mock_delete(&server, 30, 30, 500).await;
+    mock_versions(&server, 30, notes_versions(&[])).await;
+
+    let (summary, log, deletes) = run_plan(&db_path, &server, notes_plan()).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (0, 1, 1));
+    let note = log[0].error.as_deref().unwrap();
+    assert!(note.contains("incohérente"), "{note}");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn confirmed_deletion_resets_the_failure_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cache.db");
+    seed(&db_path);
+    let server = MockServer::start().await;
+    // 4 fichiers en échec, 1 suppression confirmée par relecture, 4 en échec.
+    for f in (41..=44).chain(46..=49) {
+        mock_delete(&server, f, 1, 403).await;
+    }
+    mock_delete(&server, 30, 30, 500).await;
+    mock_versions(&server, 30, notes_versions(&[31])).await;
+
+    let mut plan = plan_of((41..=44).map(|f| (f, 1)));
+    plan.items.extend(notes_plan().items);
+    plan.items.extend(plan_of((46..=49).map(|f| (f, 1))).items);
+    let (summary, _, deletes) = run_plan(&db_path, &server, plan).await;
+    assert_eq!((summary.deleted, summary.failed, deletes), (1, 8, 9));
+    assert_eq!(summary.stopped, None);
+    server.verify().await;
 }
 
 #[tokio::test]
