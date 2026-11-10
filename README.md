@@ -129,7 +129,7 @@ Pour publier une release : passer `version` à X.Y.Z dans `Cargo.toml`, commiter
 
 Secrets à configurer : `CODECOV_TOKEN` et `SONAR_TOKEN`. Sans eux, les étapes correspondantes sont simplement ignorées.
 
-Les dépendances (Cargo et actions GitHub) sont mises à jour par [Renovate](renovate.json), chaque lundi. Les mises à jour mineures sont groupées et les actions sont épinglées par digest.
+Les dépendances (Cargo et actions GitHub) sont mises à jour par [Renovate](renovate.json), chaque lundi. Les mises à jour mineures sont groupées et les actions sont épinglées par digest. Les digests et les pins sont fusionnés automatiquement une fois la CI verte. La maintenance du lockfile, qui fait monter toutes les dépendances dans leurs plages, et les mises à jour mineures et majeures restent manuelles.
 
 Les consignes pour les agents de code sont dans [AGENTS.md](AGENTS.md).
 

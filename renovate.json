@@ -21,6 +21,11 @@
       "groupName": "dépendances (mineures)"
     },
     {
+      "description": "Digests et pins fusionnés automatiquement, CI verte requise (un groupe avec une mineure ne l'est pas)",
+      "matchUpdateTypes": ["digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
       "description": "La version de dtolnay/rust-toolchain encode la toolchain (stable, MSRV) : ne pas la changer",
       "matchPackageNames": ["dtolnay/rust-toolchain"],
       "matchUpdateTypes": ["major", "minor", "patch"],
