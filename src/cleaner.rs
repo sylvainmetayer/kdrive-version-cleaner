@@ -1,11 +1,13 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
+use reqwest::StatusCode;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::Client;
+use crate::api::{Client, HttpError};
 use crate::db::{Db, Entry, LogEntry};
 use crate::events::AppEvent;
 use crate::now;
@@ -39,6 +41,8 @@ pub struct ExecSummary {
     pub failed: usize,
     pub freed: i64,
     pub cancelled: bool,
+    /// Raison de l'arrêt anticipé du lot (token refusé, échecs en série).
+    pub stopped: Option<String>,
     pub errors: Vec<String>,
 }
 
@@ -46,6 +50,9 @@ pub type Cancel = Arc<AtomicBool>;
 
 /// Au-delà, une liste de versions en cache est rechargée depuis l'API.
 const VERSIONS_TTL_SECS: i64 = 3600;
+
+/// Au-delà de ce nombre de fichiers en échec d'affilée, le reste du lot n'est pas tenté.
+const MAX_CONSECUTIVE_FAILED_FILES: usize = 5;
 
 /// Versions d'un fichier, depuis le cache (si récent) ou l'API.
 pub async fn load_versions(
@@ -150,7 +157,10 @@ pub async fn execute(
         }
     };
     let total = plan.items.len();
-    for item in &plan.items {
+    // Fichiers en échec depuis le dernier succès : les versions d'un même fichier
+    // (corbeille, droits) ne comptent qu'une fois, contiguës ou non.
+    let mut failed_files = HashSet::new();
+    for (i, item) in plan.items.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             summary.cancelled = true;
             break;
@@ -159,6 +169,13 @@ pub async fn execute(
             .delete_version(drive_id, item.file_id, item.version_id)
             .await;
         let error = res.as_ref().err().map(|e| format!("{e:#}"));
+        // Token expiré ou révoqué : les suppressions suivantes échoueraient aussi.
+        // Un 403 peut ne viser qu'un fichier : c'est un échec ordinaire, compté par fichier.
+        let unauthorized = res
+            .as_ref()
+            .err()
+            .and_then(|e| e.downcast_ref::<HttpError>())
+            .is_some_and(|h| h.status == StatusCode::UNAUTHORIZED);
         let logged = db.log_deletion(&LogEntry {
             ts: now(),
             drive_id,
@@ -175,6 +192,7 @@ pub async fn execute(
         }
         match error {
             None => {
+                failed_files.clear();
                 summary.deleted += 1;
                 summary.freed += item.size;
                 if let Err(e) =
@@ -184,6 +202,7 @@ pub async fn execute(
                 }
             }
             Some(e) => {
+                failed_files.insert(item.file_id);
                 summary.failed += 1;
                 // L'état réel de la version est inconnu (déjà supprimée lors d'un essai
                 // précédent, modifiée entre-temps…) : on recharge la liste au prochain usage.
@@ -201,6 +220,20 @@ pub async fn execute(
             freed: summary.freed,
             failed: summary.failed,
         });
+        let left = total - i - 1;
+        let reason = if unauthorized {
+            "token refusé par l'API (HTTP 401)".to_string()
+        } else if failed_files.len() >= MAX_CONSECUTIVE_FAILED_FILES {
+            format!("{} fichiers consécutifs en échec", failed_files.len())
+        } else {
+            continue;
+        };
+        if left > 0 {
+            summary.stopped = Some(format!(
+                "Lot arrêté : {reason}. {left} version(s) non tentée(s)."
+            ));
+            break;
+        }
     }
     if let Err(e) = db.recompute_aggregates(drive_id) {
         summary.errors.push(format!("cache : {e:#}"));

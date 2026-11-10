@@ -964,17 +964,29 @@ fn draw_summary(f: &mut Frame, s: &ExecSummary) {
     if s.cancelled {
         lines.push(Line::from("Opération interrompue.").fg(Color::Yellow));
     }
+    if let Some(stopped) = &s.stopped {
+        lines.push(Line::from(stopped.as_str()).fg(DANGER));
+    }
     if s.failed > 0 {
         lines.push(Line::from(format!("{} échec(s) :", s.failed)).fg(DANGER));
     }
     for e in s.errors.iter().take(4) {
         lines.push(Line::from(format!("  {e}")).fg(DANGER));
     }
-    lines.push(Line::default());
-    lines.push(Line::from("Détails dans l'onglet Journal. Entrée pour fermer.").dim());
+    // Consigne sur sa propre ligne : des erreurs longues ne la font pas sortir du cadre.
+    let [body, _, footer] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
     f.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        inner,
+        body,
+    );
+    f.render_widget(
+        Paragraph::new("Détails dans l'onglet Journal. Entrée pour fermer.").dim(),
+        footer,
     );
 }
 

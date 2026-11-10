@@ -67,6 +67,19 @@ pub struct Client {
     limiter: Arc<RateLimiter>,
 }
 
+/// Erreur HTTP de l'API : son code reste accessible par `downcast_ref`.
+#[derive(Debug)]
+pub struct HttpError {
+    pub status: StatusCode,
+    message: String,
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 pub struct CursorPage<T> {
     pub items: Vec<T>,
     pub cursor: Option<String>,
@@ -163,18 +176,22 @@ impl Client {
                 .text()
                 .await
                 .with_context(|| format!("{method} {path} : lecture de la réponse"))?;
-            let env: Envelope<T> = serde_json::from_str(&body).with_context(|| {
-                format!(
+            let env: Envelope<T> = serde_json::from_str(&body).with_context(|| HttpError {
+                status,
+                message: format!(
                     "{method} {path} : réponse illisible (HTTP {status}) : {}",
                     truncate(&body, 200)
-                )
+                ),
             })?;
             if env.result != "success" || !status.is_success() {
                 let err = env
                     .error
                     .map(|e| format!("{} {}", e.code, e.description.unwrap_or_default()))
                     .unwrap_or_else(|| truncate(&body, 200).to_string());
-                bail!("{method} {path} : HTTP {status} : {err}");
+                return Err(anyhow!(HttpError {
+                    status,
+                    message: format!("{method} {path} : HTTP {status} : {err}"),
+                }));
             }
             return Ok(env);
         }
