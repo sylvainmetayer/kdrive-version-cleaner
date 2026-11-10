@@ -48,7 +48,7 @@ pub struct ScanVersions {
 ///
 /// Un fichier courant vide ne permet pas de conclure : sa taille ne changerait
 /// pas la somme.
-fn matches_scan(versions: &[Version], scan: Option<ScanVersions>) -> bool {
+pub fn matches_scan(versions: &[Version], scan: Option<ScanVersions>) -> bool {
     let Some(scan) = scan else { return false };
     let size: i64 = versions.iter().map(|v| v.size).sum();
     scan.file_size > 0 && versions.len() as i64 == scan.count && size == scan.size

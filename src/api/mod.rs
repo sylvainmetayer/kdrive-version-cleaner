@@ -98,9 +98,19 @@ impl Client {
     }
 
     pub fn with_options(token: String, base: String, min_interval: Duration) -> Result<Self> {
+        Self::with_timeout(token, base, min_interval, Duration::from_secs(60))
+    }
+
+    /// Comme `with_options`, avec un délai maximal par requête (les tests le raccourcissent).
+    pub fn with_timeout(
+        token: String,
+        base: String,
+        min_interval: Duration,
+        timeout: Duration,
+    ) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("kdvc/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(60))
+            .timeout(timeout)
             .build()?;
         Ok(Self {
             http,
