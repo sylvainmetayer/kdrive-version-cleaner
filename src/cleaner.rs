@@ -147,21 +147,31 @@ fn ambiguous(e: &anyhow::Error) -> bool {
     }
 }
 
+/// Token expiré ou révoqué : les suppressions suivantes échoueraient aussi.
+fn is_unauthorized(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<HttpError>()
+        .is_some_and(|h| h.status == StatusCode::UNAUTHORIZED)
+}
+
 /// Après un DELETE à l'issue inconnue : la version a-t-elle disparu de la liste ?
 ///
 /// Une version présente (par son id) est un échec. Son absence ne prouve la
 /// suppression que si la liste correspond exactement au scan moins cette version,
-/// comme pour l'invariant de la version courante : une liste vide ou tronquée ne
-/// doit pas faire conclure à tort. Sinon, l'issue reste inconnue (erreur).
+/// comme pour l'invariant de la version courante, et n'est pas vide : une liste
+/// vide peut aussi venir d'un fichier mis à la corbeille ou disparu. Sinon,
+/// l'issue reste inconnue (erreur). Un seul essai : un lot en panne ne s'allonge pas.
 async fn deleted_on_server(
     client: &Client,
     drive_id: i64,
     item: &PlannedDeletion,
     scan: Option<rules::ScanVersions>,
 ) -> Result<bool> {
-    let versions = client.list_versions(drive_id, item.file_id).await?;
+    let versions = client.check_versions(drive_id, item.file_id).await?;
     if versions.iter().any(|v| v.id == item.version_id) {
         return Ok(false);
+    }
+    if versions.is_empty() {
+        bail!("version absente, mais liste vide : fichier peut-être supprimé");
     }
     let expected = scan.map(|s| rules::ScanVersions {
         count: s.count - 1,
@@ -205,8 +215,16 @@ pub async fn execute(
             .delete_version(drive_id, item.file_id, item.version_id)
             .await;
         let mut error = res.as_ref().err().map(|e| format!("{e:#}"));
+        // Un 403 peut ne viser qu'un fichier : c'est un échec ordinaire, compté par fichier.
+        let mut unauthorized = res.as_ref().err().is_some_and(is_unauthorized);
         // Issue inconnue : on relit la liste des versions, sans jamais rejouer le DELETE.
+        // Annulation demandée : pas de relecture, la version est journalisée en échec.
         if let Err(e) = &res
+            && ambiguous(e)
+            && cancel.load(Ordering::Relaxed)
+        {
+            error = Some(format!("{e:#} ; issue inconnue, relecture annulée"));
+        } else if let Err(e) = &res
             && ambiguous(e)
         {
             // Référence du scan lue avant la relecture (illisible : rien n'est prouvé).
@@ -221,23 +239,19 @@ pub async fn execute(
                     "suppression confirmée par relecture des versions".into(),
                 ),
                 Ok(false) => (false, "version toujours présente à la relecture".into()),
-                Err(v) => (
-                    false,
-                    format!("issue inconnue, relecture impossible : {v:#}"),
-                ),
+                Err(v) => {
+                    unauthorized |= is_unauthorized(&v);
+                    (
+                        false,
+                        format!("issue inconnue, relecture impossible : {v:#}"),
+                    )
+                }
             };
             error = Some(format!("{e:#} ; {verdict}"));
             if deleted {
                 res = Ok(());
             }
         }
-        // Token expiré ou révoqué : les suppressions suivantes échoueraient aussi.
-        // Un 403 peut ne viser qu'un fichier : c'est un échec ordinaire, compté par fichier.
-        let unauthorized = res
-            .as_ref()
-            .err()
-            .and_then(|e| e.downcast_ref::<HttpError>())
-            .is_some_and(|h| h.status == StatusCode::UNAUTHORIZED);
         let logged = db.log_deletion(&LogEntry {
             ts: now(),
             drive_id,
