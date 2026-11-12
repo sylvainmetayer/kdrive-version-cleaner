@@ -10,6 +10,16 @@
   "lockFileMaintenance": {
     "enabled": true
   },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Extension gh-actions-lock épinglée dans verify-lockfile.yml (--pin vX.Y.Z)",
+      "managerFilePatterns": ["/^\\.github/workflows/verify-lockfile\\.yml$/"],
+      "matchStrings": ["--pin (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "github/gh-actions-lock",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
   "vulnerabilityAlerts": {
     "enabled": true,
     "schedule": ["at any time"]
@@ -24,6 +34,12 @@
       "description": "Digests et pins fusionnés automatiquement, CI verte requise (un groupe avec une mineure ne l'est pas)",
       "matchUpdateTypes": ["digest", "pin", "pinDigest"],
       "automerge": true
+    },
+    {
+      "description": "gh-actions-lock : PR à part, jamais d'automerge (0.x, format du verrou encore mouvant)",
+      "matchDepNames": ["github/gh-actions-lock"],
+      "groupName": "gh-actions-lock",
+      "automerge": false
     },
     {
       "description": "La version de dtolnay/rust-toolchain encode la toolchain (stable, MSRV) : ne pas la changer",
