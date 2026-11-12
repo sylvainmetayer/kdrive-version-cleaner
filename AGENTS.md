@@ -96,6 +96,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 - `ci.yml` : fmt, clippy, tests Linux/macOS/Windows, MSRV, build.
 - `quality.yml` : cargo-deny, couverture via cargo-llvm-cov, envoyée à Codecov et à SonarQube Cloud (secrets `CODECOV_TOKEN` et `SONAR_TOKEN`).
 - `codeql.yml`, `scorecard.yml` : analyses de sécurité.
+- `verify-lockfile.yml` : `gh actions-lock --verify`. Les actions sont épinglées par SHA en ligne **et** verrouillées dans `.github/workflows/actions.lock` (`github/gh-actions-lock`). Après tout ajout ou changement de `uses:`, lancer `gh actions-lock --no-narrow` (sans `--no-narrow`, l'outil réécrit les SHA en tags) ; ne jamais éditer ni supprimer le verrou à la main, Renovate le régénère.
 - `release.yml` : se déclenche sur un tag `vX.Y.Z`, qui doit être égal à `version` dans `Cargo.toml`. Il produit les binaires de 6 cibles, avec SHA-256 et attestation de provenance.
 - Dépendances : **Renovate** (`renovate.json`). Dependabot n'est pas utilisé pour les mises à jour.
 
