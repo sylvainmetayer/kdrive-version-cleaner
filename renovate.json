@@ -7,8 +7,10 @@
   ],
   "timezone": "Europe/Paris",
   "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "3 days",
   "lockFileMaintenance": {
-    "enabled": true
+    "enabled": true,
+    "automerge": true
   },
   "customManagers": [
     {
@@ -22,7 +24,8 @@
   ],
   "vulnerabilityAlerts": {
     "enabled": true,
-    "schedule": ["at any time"]
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null
   },
   "packageRules": [
     {
@@ -31,9 +34,22 @@
       "groupName": "dépendances (mineures)"
     },
     {
-      "description": "Digests et pins fusionnés automatiquement, CI verte requise (un groupe avec une mineure ne l'est pas)",
-      "matchUpdateTypes": ["digest", "pin", "pinDigest"],
+      "description": "Correctives, digests et pins fusionnés automatiquement, CI verte requise",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
       "automerge": true
+    },
+    {
+      "description": "Mineures des versions >= 1.0 : fusion automatique, CI verte requise",
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": "!/^0\\./",
+      "automerge": true
+    },
+    {
+      "description": "Mineures 0.x : potentiellement cassantes (semver Cargo), PR à part et fusion manuelle",
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": "/^0\\./",
+      "groupName": "dépendances 0.x (mineures)",
+      "automerge": false
     },
     {
       "description": "gh-actions-lock : PR à part, jamais d'automerge (0.x, format du verrou encore mouvant)",
