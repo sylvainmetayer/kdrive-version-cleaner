@@ -6,7 +6,7 @@ Guide pour les agents de code (Claude Code, Codex, Copilot…) travaillant sur c
 
 `kdvc` est une TUI Rust (ratatui) qui affiche l'espace occupé par les anciennes versions des fichiers d'un kDrive Infomaniak et permet de les supprimer en sécurité. Le binaire est mono-utilisateur et local. Il n'a pas de serveur et ne parle qu'à l'API Infomaniak.
 
-- Rust **edition 2024**, **MSRV 1.89** (`rust-version` dans `Cargo.toml`, vérifiée en CI). Pas de fonctionnalité plus récente sans relever la MSRV partout : `Cargo.toml`, le job MSRV de `ci.yml` (empreinte et commentaire), le badge et les prérequis du README et ce fichier.
+- Rust **edition 2024**, **MSRV 1.89** (`rust-version` dans `Cargo.toml`, vérifiée en CI). Pas de fonctionnalité plus récente sans relever la MSRV partout : `Cargo.toml`, le job MSRV de `ci.yml` (entrée `toolchain`), le badge et les prérequis du README et ce fichier.
 - Langue : l'interface, les messages d'erreur, les commentaires et les commits sont **en français**.
 
 ## Commandes
@@ -96,7 +96,7 @@ Toute modification de `rules.rs`, `cleaner.rs` ou des appels DELETE doit être a
 - `ci.yml` : fmt, clippy, tests Linux/macOS/Windows, MSRV, build.
 - `quality.yml` : cargo-deny, couverture via cargo-llvm-cov, envoyée à Codecov et à SonarQube Cloud (secrets `CODECOV_TOKEN` et `SONAR_TOKEN`).
 - `codeql.yml`, `scorecard.yml` : analyses de sécurité.
-- `verify-lockfile.yml` : `gh actions-lock --verify`. Les actions sont épinglées par SHA en ligne **et** verrouillées dans `.github/workflows/actions.lock` (`github/gh-actions-lock`). Après tout ajout ou changement de `uses:`, lancer `gh actions-lock --no-narrow` (sans `--no-narrow`, l'outil réécrit les SHA en tags) ; ne jamais éditer ni supprimer le verrou à la main, Renovate le régénère.
+- `verify-lockfile.yml` : `gh actions-lock --verify`. Les actions sont épinglées par SHA en ligne **et** verrouillées dans `.github/workflows/actions.lock` (`github/gh-actions-lock`). Après tout ajout ou changement de `uses:`, lancer `gh actions-lock --no-narrow` (sans `--no-narrow`, l'outil réécrit les SHA en tags) ; ne jamais éditer ni supprimer le verrou à la main, Renovate le régénère. `dtolnay/rust-toolchain` est épinglée sur un commit de `master` avec l'entrée `toolchain` : ses branches `stable` et `1.xx` sont réécrites (force-push) en amont, ce qui invalide le verrou.
 - `release.yml` : se déclenche sur un tag `vX.Y.Z`, qui doit être égal à `version` dans `Cargo.toml`. Il produit les binaires de 6 cibles, avec SHA-256 et attestation de provenance.
 - Dépendances : **Renovate** (`renovate.json`). Dependabot n'est pas utilisé pour les mises à jour.
 
