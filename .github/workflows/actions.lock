@@ -6,8 +6,7 @@ workflows:
     '.github/workflows/ci.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66'
-        - 'dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+        - 'dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc'
         - 'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0'
     '.github/workflows/codeql.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
@@ -15,7 +14,7 @@ workflows:
     '.github/workflows/quality.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5'
-        - 'dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+        - 'dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc'
         - 'embarkstudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25'
         - 'sonarsource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65'
         - 'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0'
@@ -25,7 +24,7 @@ workflows:
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+        - 'dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc'
         - 'softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3'
         - 'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0'
     '.github/workflows/scorecard.yml':
@@ -75,14 +74,9 @@ dependencies:
         repo_id: 200299178
         uses:
             - 'actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd'
-    'dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66':
-        ref: '1.89'
-        commit: 'sha1-599c45df1a24c1c63ae1129a7e59f46654b8fb66'
-        owner_id: 1940490
-        repo_id: 260749683
-    'dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec':
-        ref: 'stable'
-        commit: 'sha1-b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+    'dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc':
+        ref: 'master'
+        commit: 'sha1-df2a88e9fe4098bad09cb42c3dec7187f15861fc'
         owner_id: 1940490
         repo_id: 260749683
     'embarkstudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25':
